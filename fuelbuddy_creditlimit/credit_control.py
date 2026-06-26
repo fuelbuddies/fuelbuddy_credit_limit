@@ -39,6 +39,18 @@ ISSUE_TYPE = "Credit Breach"
 # Kept as a local constant so this app does not depend on the Wallet app being installed.
 CASH_ADVANCE_TERMS = "Cash advance"
 
+# Master switch. The shared "Fuelbuddy Settings" single (hosted in fuelbuddy_crm,
+# read by all FuelBuddy apps) gates this whole feature via its "Enable Credit Limit"
+# flag. When off (the default), every document-event/scheduler hook below no-ops:
+# no Credit Limit records are created (onboarding or Finance Dossier) and Delivery
+# Notes are not blocked on credit.
+FB_SETTINGS_DOCTYPE = "Fuelbuddy Settings"
+
+
+def _credit_limit_enabled():
+	"""True when the Credit Limit feature is enabled in Fuelbuddy Settings (default off)."""
+	return bool(frappe.db.get_single_value(FB_SETTINGS_DOCTYPE, "enable_credit_limit"))
+
 
 # -- customer classification -------------------------------------------------
 
@@ -165,6 +177,8 @@ def check_delivery_note(doc, method=None):
 	  * over_limit -- the credit limit is exhausted (exposure >= limit)
 	On block we raise an ERPNext Issue (enqueued so it survives the throw's rollback)
 	and stop the save."""
+	if not _credit_limit_enabled():
+		return  # feature disabled in Fuelbuddy Settings -> never block on credit
 	customer = doc.get("customer")
 	if not customer or is_cash_advance(customer):
 		return  # cash-advance customers are enforced by the Wallet blocker
@@ -272,6 +286,8 @@ def update_on_delivery_note(doc, method=None):
 	"""Delivery Note on_submit / on_cancel: refresh the customer's credit position.
 
 	This is the "every DN punch changes data on the Credit Limit doctype" behaviour."""
+	if not _credit_limit_enabled():
+		return
 	customer = doc.get("customer")
 	if customer and not is_cash_advance(customer):
 		recompute(customer)
@@ -279,6 +295,8 @@ def update_on_delivery_note(doc, method=None):
 
 def refresh_on_invoice(doc, method=None):
 	"""Sales Invoice on_submit / on_cancel: refresh the customer's credit position."""
+	if not _credit_limit_enabled():
+		return
 	customer = doc.get("customer")
 	if customer:
 		recompute(customer)
@@ -286,6 +304,8 @@ def refresh_on_invoice(doc, method=None):
 
 def refresh_on_payment_entry(doc, method=None):
 	"""Payment Entry on_submit / on_cancel: a payment frees credit / can clear overdue."""
+	if not _credit_limit_enabled():
+		return
 	if doc.get("party_type") == "Customer" and doc.get("party"):
 		recompute(doc.party)
 
@@ -299,6 +319,8 @@ def sync_limit_from_finance_dossier(doc, method=None):
 	Runs after the Finance Dossier controller's on_submit has created the Sales Order
 	(and, for Lead-based quotations, the Customer), so the customer can be resolved via
 	the Sales Order raised from the dossier's quotation."""
+	if not _credit_limit_enabled():
+		return
 	customer = _resolve_customer_from_fd(doc)
 	if not customer or is_cash_advance(customer):
 		return
@@ -333,6 +355,8 @@ def _resolve_customer_from_fd(doc):
 
 def create_credit_for_customer(doc, method=None):
 	"""Customer after_insert: create a Credit Limit record for every non-cash-advance customer."""
+	if not _credit_limit_enabled():
+		return
 	if doc.get("payment_terms") == CASH_ADVANCE_TERMS:
 		return
 	get_or_create_credit_limit(doc.name)
@@ -341,6 +365,8 @@ def create_credit_for_customer(doc, method=None):
 def refresh_overdue_daily():
 	"""Daily scheduler: recompute every Credit Limit record so invoices that crossed their
 	due date today flip the breach (a due date passing has no document event to hook)."""
+	if not _credit_limit_enabled():
+		return
 	for row in frappe.get_all(DOCTYPE, fields=["customer"]):
 		try:
 			recompute(row.customer)
