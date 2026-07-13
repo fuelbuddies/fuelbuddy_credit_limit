@@ -349,8 +349,11 @@ def _ensure_issue_type():
 # -- figure upkeep (document events) -----------------------------------------
 
 
-def update_on_delivery_note(doc, method=None):
-	"""Delivery Note on_submit / on_cancel: refresh the customer's credit position.
+# Per team convention: one submit-side and one cancel-side handler per doctype.
+
+
+def update_on_delivery_note_submit(doc, method=None):
+	"""Delivery Note on_submit: refresh the customer's credit position.
 
 	This is the "every DN punch changes data on the Credit Limit doctype" behaviour."""
 	if not _credit_limit_enabled():
@@ -360,8 +363,17 @@ def update_on_delivery_note(doc, method=None):
 		recompute(customer)
 
 
-def refresh_on_invoice(doc, method=None):
-	"""Sales Invoice on_submit / on_cancel: refresh the customer's credit position."""
+def update_on_delivery_note_cancel(doc, method=None):
+	"""Delivery Note on_cancel: the DN leaves the exposure; refresh (bulk cancel included)."""
+	if not _credit_limit_enabled():
+		return
+	customer = doc.get("customer")
+	if customer and not is_cash_advance(customer):
+		recompute(customer)
+
+
+def refresh_on_invoice_submit(doc, method=None):
+	"""Sales Invoice on_submit: refresh the customer's credit position."""
 	if not _credit_limit_enabled():
 		return
 	customer = doc.get("customer")
@@ -369,8 +381,26 @@ def refresh_on_invoice(doc, method=None):
 		recompute(customer)
 
 
-def refresh_on_payment_entry(doc, method=None):
-	"""Payment Entry on_submit / on_cancel: a payment frees credit / can clear overdue."""
+def refresh_on_invoice_cancel(doc, method=None):
+	"""Sales Invoice on_cancel: outstanding drops with the invoice; refresh."""
+	if not _credit_limit_enabled():
+		return
+	customer = doc.get("customer")
+	if customer:
+		recompute(customer)
+
+
+def refresh_on_payment_entry_submit(doc, method=None):
+	"""Payment Entry on_submit: a payment frees credit / can clear overdue."""
+	if not _credit_limit_enabled():
+		return
+	if doc.get("party_type") == "Customer" and doc.get("party"):
+		recompute(doc.party)
+
+
+def refresh_on_payment_entry_cancel(doc, method=None):
+	"""Payment Entry on_cancel: the payment's allocation is reversed, outstanding
+	rises again; refresh so exposure/overdue reflect it (bulk cancel included)."""
 	if not _credit_limit_enabled():
 		return
 	if doc.get("party_type") == "Customer" and doc.get("party"):
