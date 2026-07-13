@@ -28,7 +28,7 @@ Delivery Note blocker -- the two blockers operate on disjoint customer sets.
 
 import frappe
 from frappe import _
-from frappe.utils import flt, fmt_money, getdate, now_datetime, nowdate
+from frappe.utils import cint, flt, fmt_money, getdate, now_datetime, nowdate
 
 DOCTYPE = "Credit Limit"
 
@@ -164,6 +164,41 @@ def recompute(customer):
 def refresh_customer_credit(customer):
 	"""Whitelisted entry point for the form's 'Refresh from Transactions' button."""
 	return recompute(customer)
+
+
+@frappe.whitelist()
+def check_customer_credit(customer):
+	"""Dry-run for the form's reconcile flow: stored Credit Limit amounts vs the
+	live figures, no writes. Safety net for bulk submit / cancel flows whose
+	events raced or were missed; `recompute` (the correct step) is total and
+	idempotent."""
+	name = frappe.db.get_value(DOCTYPE, {"customer": customer}, "name")
+	if not name:
+		frappe.throw(_("No Credit Limit record for {0}").format(customer))
+	row = frappe.db.get_value(
+		DOCTYPE,
+		name,
+		["credit_limit", "amount_delivered", "amount_remaining", "days"],
+		as_dict=True,
+	)
+	fig = compute_figures(customer)
+	limit = flt(row.credit_limit)
+	expected = {
+		"amount_delivered": fig["exposure"],
+		"amount_remaining": limit - fig["exposure"],
+		"days": fig["overdue_days"],
+	}
+	stored = {
+		"amount_delivered": flt(row.amount_delivered),
+		"amount_remaining": flt(row.amount_remaining),
+		"days": cint(row.days),
+	}
+	in_sync = (
+		abs(stored["amount_delivered"] - expected["amount_delivered"]) < 0.005
+		and abs(stored["amount_remaining"] - expected["amount_remaining"]) < 0.005
+		and stored["days"] == cint(expected["days"])
+	)
+	return {"stored": stored, "expected": expected, "in_sync": in_sync}
 
 
 # -- Delivery Note enforcement (R2 overdue + R3 over-limit) ------------------
