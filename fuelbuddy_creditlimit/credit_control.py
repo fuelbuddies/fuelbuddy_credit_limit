@@ -188,17 +188,19 @@ def check_delivery_note(doc, method=None):
 		return
 
 	message = _block_message(customer, reason, fig, limit)
+	description = _block_description(customer, reason, fig, limit, doc)
 
 	# Raise the follow-up Issue in a background job: frappe.throw below rolls back this
 	# request's transaction, but an immediately-enqueued (not after_commit) job is pushed
-	# to the queue regardless and runs in its own transaction.
+	# to the queue regardless and runs in its own transaction. The Issue carries the full
+	# breakdown (exact reason + figures); the user-facing throw stays short.
 	frappe.enqueue(
 		"fuelbuddy_creditlimit.credit_control.raise_credit_block_issue",
 		queue="short",
 		customer=customer,
 		delivery_note=doc.get("name"),
 		reason=reason,
-		message=message,
+		description=description,
 	)
 	frappe.throw(message, title=_("Credit Breach"))
 
@@ -238,9 +240,40 @@ def _block_message(customer, reason, fig, limit):
 	)
 
 
-def raise_credit_block_issue(customer, delivery_note, reason, message):
+def _block_description(customer, reason, fig, limit, doc=None):
+	"""Full, exact breakdown of *why* the delivery was blocked, for the ops Issue.
+
+	Unlike the short user-facing throw (_block_message), this states the precise
+	numbers so ops can act without re-deriving them."""
+	cust_name = frappe.db.get_value("Customer", customer, "customer_name") or customer
+	lines = [
+		_("Delivery blocked for {0} ({1}).").format(cust_name, customer),
+		_("Reason: {0}").format("payment overdue" if reason == "overdue" else "credit limit exhausted"),
+		_("Credit limit: {0}").format(fmt_money(limit)),
+		_("Current exposure: {0} (outstanding invoices {1} + delivered-not-invoiced)").format(
+			fmt_money(fig["exposure"]), fmt_money(fig["total_outstanding"])
+		),
+	]
+	if reason == "overdue":
+		lines.append(_("Overdue by {0} day(s); overdue amount {1}.").format(
+			fig["overdue_days"], fmt_money(fig["overdue_amount"])
+		))
+		lines.append(_("Overdue invoice(s): {0}").format(", ".join(fig["overdue_invoices"]) or "-"))
+	else:
+		lines.append(_("Over the limit by {0}.").format(fmt_money(fig["exposure"] - limit)))
+	# Context on the punch that was refused.
+	dn_qty = sum(flt(getattr(i, "qty", 0)) for i in (doc.get("items") or [])) if doc else 0
+	if doc:
+		lines.append(_("Refused Delivery Note total qty {0} (grand total {1}).").format(
+			dn_qty, fmt_money(flt(doc.get("grand_total")))
+		))
+	return "\n".join(lines)
+
+
+def raise_credit_block_issue(customer, delivery_note, reason, description):
 	"""Background job: create an ERPNext Issue for a blocked Delivery Note.
 
+	`description` is the full breakdown from _block_description (exact reason + figures).
 	Deduplicated -- if an open credit-block Issue already exists for the customer we skip,
 	so repeated save attempts on the same blocked DN don't spawn duplicates."""
 	open_issue = frappe.get_all(
@@ -255,7 +288,6 @@ def raise_credit_block_issue(customer, delivery_note, reason, message):
 	if open_issue:
 		return
 
-	description = message
 	if delivery_note:
 		description += _("\n\nTriggered while saving Delivery Note {0}.").format(delivery_note)
 
