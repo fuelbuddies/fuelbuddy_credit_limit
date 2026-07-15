@@ -28,7 +28,7 @@ Delivery Note blocker -- the two blockers operate on disjoint customer sets.
 
 import frappe
 from frappe import _
-from frappe.utils import flt, fmt_money, getdate, now_datetime, nowdate
+from frappe.utils import cint, flt, fmt_money, getdate, now_datetime, nowdate
 
 DOCTYPE = "Credit Limit"
 
@@ -166,6 +166,41 @@ def refresh_customer_credit(customer):
 	return recompute(customer)
 
 
+@frappe.whitelist()
+def check_customer_credit(customer):
+	"""Dry-run for the form's reconcile flow: stored Credit Limit amounts vs the
+	live figures, no writes. Safety net for bulk submit / cancel flows whose
+	events raced or were missed; `recompute` (the correct step) is total and
+	idempotent."""
+	name = frappe.db.get_value(DOCTYPE, {"customer": customer}, "name")
+	if not name:
+		frappe.throw(_("No Credit Limit record for {0}").format(customer))
+	row = frappe.db.get_value(
+		DOCTYPE,
+		name,
+		["credit_limit", "amount_delivered", "amount_remaining", "days"],
+		as_dict=True,
+	)
+	fig = compute_figures(customer)
+	limit = flt(row.credit_limit)
+	expected = {
+		"amount_delivered": fig["exposure"],
+		"amount_remaining": limit - fig["exposure"],
+		"days": fig["overdue_days"],
+	}
+	stored = {
+		"amount_delivered": flt(row.amount_delivered),
+		"amount_remaining": flt(row.amount_remaining),
+		"days": cint(row.days),
+	}
+	in_sync = (
+		abs(stored["amount_delivered"] - expected["amount_delivered"]) < 0.005
+		and abs(stored["amount_remaining"] - expected["amount_remaining"]) < 0.005
+		and stored["days"] == cint(expected["days"])
+	)
+	return {"stored": stored, "expected": expected, "in_sync": in_sync}
+
+
 # -- Delivery Note enforcement (R2 overdue + R3 over-limit) ------------------
 
 
@@ -188,17 +223,19 @@ def check_delivery_note(doc, method=None):
 		return
 
 	message = _block_message(customer, reason, fig, limit)
+	description = _block_description(customer, reason, fig, limit, doc)
 
 	# Raise the follow-up Issue in a background job: frappe.throw below rolls back this
 	# request's transaction, but an immediately-enqueued (not after_commit) job is pushed
-	# to the queue regardless and runs in its own transaction.
+	# to the queue regardless and runs in its own transaction. The Issue carries the full
+	# breakdown (exact reason + figures); the user-facing throw stays short.
 	frappe.enqueue(
 		"fuelbuddy_creditlimit.credit_control.raise_credit_block_issue",
 		queue="short",
 		customer=customer,
 		delivery_note=doc.get("name"),
 		reason=reason,
-		message=message,
+		description=description,
 	)
 	frappe.throw(message, title=_("Credit Breach"))
 
@@ -238,9 +275,40 @@ def _block_message(customer, reason, fig, limit):
 	)
 
 
-def raise_credit_block_issue(customer, delivery_note, reason, message):
+def _block_description(customer, reason, fig, limit, doc=None):
+	"""Full, exact breakdown of *why* the delivery was blocked, for the ops Issue.
+
+	Unlike the short user-facing throw (_block_message), this states the precise
+	numbers so ops can act without re-deriving them."""
+	cust_name = frappe.db.get_value("Customer", customer, "customer_name") or customer
+	lines = [
+		_("Delivery blocked for {0} ({1}).").format(cust_name, customer),
+		_("Reason: {0}").format("payment overdue" if reason == "overdue" else "credit limit exhausted"),
+		_("Credit limit: {0}").format(fmt_money(limit)),
+		_("Current exposure: {0} (outstanding invoices {1} + delivered-not-invoiced)").format(
+			fmt_money(fig["exposure"]), fmt_money(fig["total_outstanding"])
+		),
+	]
+	if reason == "overdue":
+		lines.append(_("Overdue by {0} day(s); overdue amount {1}.").format(
+			fig["overdue_days"], fmt_money(fig["overdue_amount"])
+		))
+		lines.append(_("Overdue invoice(s): {0}").format(", ".join(fig["overdue_invoices"]) or "-"))
+	else:
+		lines.append(_("Over the limit by {0}.").format(fmt_money(fig["exposure"] - limit)))
+	# Context on the punch that was refused.
+	dn_qty = sum(flt(getattr(i, "qty", 0)) for i in (doc.get("items") or [])) if doc else 0
+	if doc:
+		lines.append(_("Refused Delivery Note total qty {0} (grand total {1}).").format(
+			dn_qty, fmt_money(flt(doc.get("grand_total")))
+		))
+	return "\n".join(lines)
+
+
+def raise_credit_block_issue(customer, delivery_note, reason, description):
 	"""Background job: create an ERPNext Issue for a blocked Delivery Note.
 
+	`description` is the full breakdown from _block_description (exact reason + figures).
 	Deduplicated -- if an open credit-block Issue already exists for the customer we skip,
 	so repeated save attempts on the same blocked DN don't spawn duplicates."""
 	open_issue = frappe.get_all(
@@ -255,7 +323,6 @@ def raise_credit_block_issue(customer, delivery_note, reason, message):
 	if open_issue:
 		return
 
-	description = message
 	if delivery_note:
 		description += _("\n\nTriggered while saving Delivery Note {0}.").format(delivery_note)
 
@@ -282,8 +349,11 @@ def _ensure_issue_type():
 # -- figure upkeep (document events) -----------------------------------------
 
 
-def update_on_delivery_note(doc, method=None):
-	"""Delivery Note on_submit / on_cancel: refresh the customer's credit position.
+# Per team convention: one submit-side and one cancel-side handler per doctype.
+
+
+def update_on_delivery_note_submit(doc, method=None):
+	"""Delivery Note on_submit: refresh the customer's credit position.
 
 	This is the "every DN punch changes data on the Credit Limit doctype" behaviour."""
 	if not _credit_limit_enabled():
@@ -293,8 +363,17 @@ def update_on_delivery_note(doc, method=None):
 		recompute(customer)
 
 
-def refresh_on_invoice(doc, method=None):
-	"""Sales Invoice on_submit / on_cancel: refresh the customer's credit position."""
+def update_on_delivery_note_cancel(doc, method=None):
+	"""Delivery Note on_cancel: the DN leaves the exposure; refresh (bulk cancel included)."""
+	if not _credit_limit_enabled():
+		return
+	customer = doc.get("customer")
+	if customer and not is_cash_advance(customer):
+		recompute(customer)
+
+
+def refresh_on_invoice_submit(doc, method=None):
+	"""Sales Invoice on_submit: refresh the customer's credit position."""
 	if not _credit_limit_enabled():
 		return
 	customer = doc.get("customer")
@@ -302,8 +381,26 @@ def refresh_on_invoice(doc, method=None):
 		recompute(customer)
 
 
-def refresh_on_payment_entry(doc, method=None):
-	"""Payment Entry on_submit / on_cancel: a payment frees credit / can clear overdue."""
+def refresh_on_invoice_cancel(doc, method=None):
+	"""Sales Invoice on_cancel: outstanding drops with the invoice; refresh."""
+	if not _credit_limit_enabled():
+		return
+	customer = doc.get("customer")
+	if customer:
+		recompute(customer)
+
+
+def refresh_on_payment_entry_submit(doc, method=None):
+	"""Payment Entry on_submit: a payment frees credit / can clear overdue."""
+	if not _credit_limit_enabled():
+		return
+	if doc.get("party_type") == "Customer" and doc.get("party"):
+		recompute(doc.party)
+
+
+def refresh_on_payment_entry_cancel(doc, method=None):
+	"""Payment Entry on_cancel: the payment's allocation is reversed, outstanding
+	rises again; refresh so exposure/overdue reflect it (bulk cancel included)."""
 	if not _credit_limit_enabled():
 		return
 	if doc.get("party_type") == "Customer" and doc.get("party"):
