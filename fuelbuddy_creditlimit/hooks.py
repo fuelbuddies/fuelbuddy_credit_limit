@@ -166,9 +166,45 @@ doc_events = {
 	"Customer": {
 		"after_insert": f"{_CC}.mark_on_customer_insert",
 	},
+	"Fuelbuddy Settings": {
+		"validate": f"{_CC}.validate_credit_settings",
+	},
 }
 
-fixtures = [{"dt": "Custom Field", "filters": [["name", "in", ["Sales Invoice-custom_credit_dispute_hold"]]]}]
+fixtures = [
+	{
+		"dt": "Custom Field",
+		"filters": [
+			[
+				"name",
+				"in",
+				[
+					"Sales Invoice-custom_credit_dispute_hold",
+					"Fuelbuddy Settings-custom_credit_insured_factor",
+					"Fuelbuddy Settings-custom_credit_warning_percent",
+					"Fuelbuddy Settings-custom_credit_column_break",
+					"Fuelbuddy Settings-custom_credit_overdue_grace_days",
+					"Fuelbuddy Settings-custom_credit_overdue_min_amount",
+					"Fuelbuddy Settings-custom_credit_unbilled_from",
+					"Fuelbuddy Settings-custom_credit_exception_max_days",
+				],
+			]
+		],
+	},
+	{
+		"dt": "Property Setter",
+		"filters": [
+			[
+				"name",
+				"in",
+				[
+					"Fuelbuddy Settings-main-track_changes",
+					"Fuelbuddy Settings-enable_credit_limit-description",
+				],
+			]
+		],
+	},
+]
 
 # Scheduled Tasks
 # ---------------

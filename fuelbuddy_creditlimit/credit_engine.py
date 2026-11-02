@@ -14,15 +14,15 @@ from frappe.utils import cint, flt, getdate, now_datetime
 def credit_settings():
 	"""The credit fields of Fuelbuddy Settings. Blank or 0 means the default: Singles get no defaults on migrate."""
 	s = frappe.db.get_singles_dict("Fuelbuddy Settings")
-	since = getdate(s.credit_unbilled_from) if s.credit_unbilled_from else None
+	since = getdate(s.custom_credit_unbilled_from) if s.custom_credit_unbilled_from else None
 	return frappe._dict(
-		credit_insured_factor=flt(s.credit_insured_factor) or 80,
-		credit_warning_percent=flt(s.credit_warning_percent) or 80,
-		credit_overdue_grace_days=cint(s.credit_overdue_grace_days) or 15,
-		credit_overdue_min_amount=flt(s.credit_overdue_min_amount) or 100,
+		credit_insured_factor=flt(s.custom_credit_insured_factor) or 80,
+		credit_warning_percent=flt(s.custom_credit_warning_percent) or 80,
+		credit_overdue_grace_days=cint(s.custom_credit_overdue_grace_days) or 15,
+		credit_overdue_min_amount=flt(s.custom_credit_overdue_min_amount) or 100,
 		# before 2000 = unset (Frappe reads a NULL Date as year 1); else U would count every DN since go-live
 		credit_unbilled_from=since if since and since.year >= 2000 else datetime.date(2026, 6, 1),
-		credit_exception_max_days=cint(s.credit_exception_max_days) or 7,
+		credit_exception_max_days=cint(s.custom_credit_exception_max_days) or 7,
 	)
 
 

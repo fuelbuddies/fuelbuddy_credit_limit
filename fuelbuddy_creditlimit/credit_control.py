@@ -184,3 +184,10 @@ def mark_on_journal_entry_cancel(doc, method=None):
 
 def mark_on_customer_insert(doc, method=None):
 	mark_dirty(*_customers(doc))
+
+
+def validate_credit_settings(doc, method=None):
+	"""Fuelbuddy Settings validate: the overdue grace is at least 15 days (0 means the default)."""
+	grace = cint(doc.get("custom_credit_overdue_grace_days"))
+	if grace and grace < 15:
+		frappe.throw(_("Overdue Grace Days must be at least 15."))
