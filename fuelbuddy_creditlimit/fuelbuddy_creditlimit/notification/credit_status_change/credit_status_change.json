@@ -1,0 +1,29 @@
+{
+ "attach_print": 0,
+ "channel": "Email",
+ "condition": "doc.in_scope and doc.get_doc_before_save() and doc.get_doc_before_save().credit_status",
+ "creation": "2026-10-30 18:00:00.000000",
+ "days_in_advance": 0,
+ "docstatus": 0,
+ "doctype": "Notification",
+ "document_type": "Credit Limit",
+ "enabled": 1,
+ "event": "Value Change",
+ "idx": 0,
+ "is_standard": 1,
+ "message_type": "HTML",
+ "modified": "2026-10-30 18:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Fuelbuddy Creditlimit",
+ "name": "Credit Status Change",
+ "owner": "Administrator",
+ "recipients": [
+  {
+   "receiver_by_role": "Credit Controller"
+  }
+ ],
+ "send_system_notification": 0,
+ "send_to_all_assignees": 0,
+ "subject": "Credit {{ doc.credit_status }}: {{ doc.customer_name }}",
+ "value_changed": "credit_status"
+}

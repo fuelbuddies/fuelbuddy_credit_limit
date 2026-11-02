@@ -1,8 +1,15 @@
 // Copyright (c) 2026, Fuelbuddy and contributors
 // For license information, please see license.txt
 
+const STOP_LABELS = {
+	no_limit: __("no approved limit"),
+	over_limit: __("over the limit"),
+	overdue: __("overdue invoices"),
+};
+
 frappe.ui.form.on("Credit Limit", {
 	refresh(frm) {
+		if (!frm.is_new()) show_credit_headline(frm);
 		if (!frm.is_new() && frappe.user.has_role(["Credit Controller", "System Manager"])) {
 			frm.add_custom_button(__("Reconcile from Transactions"), () => {
 				frappe.call({
@@ -15,6 +22,31 @@ frappe.ui.form.on("Credit Limit", {
 		}
 	},
 });
+
+// Headline and the as-of line share the form's one message area.
+function show_credit_headline(frm) {
+	const doc = frm.doc;
+	const lines = [];
+	let color = "blue";
+	if (doc.credit_status === "Stopped") {
+		const reasons = (doc.stop_reasons || "").split(",").filter(Boolean);
+		lines.push(__("Credit stop: {0}", [reasons.map((r) => STOP_LABELS[r] || r).join(", ")]));
+		color = "red";
+	} else if (doc.credit_status === "Warning") {
+		const limit = flt(doc.operating_limit) + flt(doc.exception_cap);
+		lines.push(__("Exposure at {0}% of the limit", [Math.round((flt(doc.exposure) / limit) * 100)]));
+		color = "orange";
+	}
+	lines.push(
+		doc.last_refreshed
+			? __("Figures as of {0} ({1})", [
+					frappe.datetime.str_to_user(doc.last_refreshed),
+					comment_when(doc.last_refreshed),
+			  ])
+			: __("Figures not computed yet")
+	);
+	frm.set_intro(lines.join("<br>"), color);
+}
 
 // Dry-run first: show stored vs live figures; only recompute when the user confirms.
 function show_credit_reconcile(frm, res) {
