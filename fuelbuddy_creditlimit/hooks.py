@@ -144,7 +144,6 @@ _CC = "fuelbuddy_creditlimit.credit_control"
 doc_events = {
 	# Per team convention: one submit-side and one cancel-side handler per doctype.
 	"Delivery Note": {
-		"validate": f"{_CC}.check_delivery_note",
 		"on_submit": f"{_CC}.update_on_delivery_note_submit",
 		"on_cancel": f"{_CC}.update_on_delivery_note_cancel",
 	},
@@ -155,12 +154,6 @@ doc_events = {
 	"Payment Entry": {
 		"on_submit": f"{_CC}.refresh_on_payment_entry_submit",
 		"on_cancel": f"{_CC}.refresh_on_payment_entry_cancel",
-	},
-	"Finance Dossier": {
-		"on_submit": f"{_CC}.sync_limit_from_finance_dossier",
-		# Safety net mirroring the dossier's own SO-creation retry: if the customer
-		# wasn't resolvable at submit, sync when the submitted dossier is saved again.
-		"on_update_after_submit": f"{_CC}.sync_limit_from_finance_dossier",
 	},
 	"Customer": {
 		"after_insert": f"{_CC}.create_credit_for_customer",

@@ -1,49 +1,18 @@
 # Copyright (c) 2026, Fuelbuddy and contributors
 # For license information, please see license.txt
 
-"""Credit control: per-customer credit limit + overdue enforcement on Delivery Notes.
-
-Model
------
-One ``Credit Limit`` record per Customer is the source of truth. Its ``credit_limit`` is
-seeded from the Finance Dossier on submit (and may be adjusted on the record). Every
-relevant transaction recomputes the customer's position:
-
-    amount_delivered  = current exposure = outstanding Sales Invoices
-                        + value of submitted Delivery Notes not yet invoiced
-    amount_remaining  = credit_limit - amount_delivered
-    days              = days overdue = today - oldest overdue invoice's due date (0 if none)
-    enable_breach     = the customer is overdue (days > 0) OR over the limit
-                        (amount_remaining <= 0, only when a limit is configured)
-    breach_amount     = overdue outstanding amount when overdue, else the over-limit amount
-    date_of_breach    = when the breach was raised (stamped on transition, cleared when it clears)
-
-While ``enable_breach`` is on, Delivery Notes are frozen on save (hard block until cleared --
-no auto-expiring window) and an ERPNext Issue is raised.
-
-Cash-advance customers (``Customer.payment_terms == "Cash advance"``) are prepaid and are
-handled by the Wallet app instead, so they get no Credit Limit record and are skipped by the
-Delivery Note blocker -- the two blockers operate on disjoint customer sets.
-"""
+"""Credit control: per-customer limit, exposure and stop flags for the platform.
+ERP never refuses a Delivery Note."""
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, fmt_money, getdate, now_datetime, nowdate
+from frappe.utils import cint, flt, getdate, now_datetime, nowdate
 
 DOCTYPE = "Credit Limit"
 
-# Issue Type used for the follow-up Issue raised when a Delivery Note is blocked.
-ISSUE_TYPE = "Credit Breach"
-
-# Mirrors fuelbuddy_wallet.fuelbuddy_wallet.doctype.wallet.wallet.CASH_ADVANCE_TERMS.
-# Kept as a local constant so this app does not depend on the Wallet app being installed.
-CASH_ADVANCE_TERMS = "Cash advance"
-
 # Master switch. The shared "Fuelbuddy Settings" single (hosted in fuelbuddy_crm,
 # read by all FuelBuddy apps) gates this whole feature via its "Enable Credit Limit"
-# flag. When off (the default), every document-event/scheduler hook below no-ops:
-# no Credit Limit records are created (onboarding or Finance Dossier) and Delivery
-# Notes are not blocked on credit.
+# flag. When off (the default), every document-event/scheduler hook below no-ops.
 FB_SETTINGS_DOCTYPE = "Fuelbuddy Settings"
 
 
@@ -52,21 +21,9 @@ def _credit_limit_enabled():
 	return bool(frappe.db.get_single_value(FB_SETTINGS_DOCTYPE, "enable_credit_limit"))
 
 
-# -- customer classification -------------------------------------------------
-
-
-def is_cash_advance(customer):
-	"""True when the customer is on Cash-advance terms (prepaid -> Wallet, not credit)."""
-	if not customer:
-		return False
-	return frappe.db.get_value("Customer", customer, "payment_terms") == CASH_ADVANCE_TERMS
-
-
 def get_or_create_credit_limit(customer):
-	"""Return the Credit Limit doc for ``customer`` (creating it if missing).
-
-	Returns ``None`` for cash-advance customers -- they never get a Credit Limit record."""
-	if not customer or is_cash_advance(customer):
+	"""Return the Credit Limit doc for ``customer`` (creating it if missing)."""
+	if not customer:
 		return None
 	name = frappe.db.get_value(DOCTYPE, {"customer": customer}, "name")
 	if name:
@@ -201,151 +158,6 @@ def check_customer_credit(customer):
 	return {"stored": stored, "expected": expected, "in_sync": in_sync}
 
 
-# -- Delivery Note enforcement (R2 overdue + R3 over-limit) ------------------
-
-
-def check_delivery_note(doc, method=None):
-	"""Delivery Note `validate`: freeze the save while the customer is in credit breach.
-
-	Block reasons (only for non-cash-advance customers):
-	  * overdue    -- a submitted Sales Invoice is past its due date and still unpaid
-	  * over_limit -- the credit limit is exhausted (exposure >= limit)
-	On block we raise an ERPNext Issue (enqueued so it survives the throw's rollback)
-	and stop the save."""
-	if not _credit_limit_enabled():
-		return  # feature disabled in Fuelbuddy Settings -> never block on credit
-	customer = doc.get("customer")
-	if not customer or is_cash_advance(customer):
-		return  # cash-advance customers are enforced by the Wallet blocker
-
-	reason, fig, limit = _block_decision(customer)
-	if not reason:
-		return
-
-	message = _block_message(customer, reason, fig, limit)
-	description = _block_description(customer, reason, fig, limit, doc)
-
-	# Raise the follow-up Issue in a background job: frappe.throw below rolls back this
-	# request's transaction, but an immediately-enqueued (not after_commit) job is pushed
-	# to the queue regardless and runs in its own transaction. The Issue carries the full
-	# breakdown (exact reason + figures); the user-facing throw stays short.
-	frappe.enqueue(
-		"fuelbuddy_creditlimit.credit_control.raise_credit_block_issue",
-		queue="short",
-		customer=customer,
-		delivery_note=doc.get("name"),
-		reason=reason,
-		description=description,
-	)
-	frappe.throw(message, title=_("Credit Breach"))
-
-
-def _block_decision(customer):
-	"""Return (reason|None, figures, limit). reason is "overdue" (wins), "over_limit", or None."""
-	fig = compute_figures(customer)
-	limit = flt(frappe.db.get_value(DOCTYPE, {"customer": customer}, "credit_limit"))
-	if fig["overdue_days"] > 0:
-		return "overdue", fig, limit
-	if limit > 0 and fig["exposure"] >= limit:
-		return "over_limit", fig, limit
-	return None, fig, limit
-
-
-def _block_message(customer, reason, fig, limit):
-	cust_name = frappe.db.get_value("Customer", customer, "customer_name") or customer
-	if reason == "overdue":
-		invoices = ", ".join(fig["overdue_invoices"][:10])
-		return _(
-			"Delivery blocked for {0}: payment is overdue by {1} day(s) on invoice(s) {2} "
-			"(overdue amount {3}). Clear the overdue invoice(s) before this delivery."
-		).format(
-			cust_name,
-			fig["overdue_days"],
-			invoices or "-",
-			fmt_money(fig["overdue_amount"]),
-		)
-	return _(
-		"Delivery blocked for {0}: the credit limit is exhausted "
-		"(limit {1}, exposure {2}, over by {3})."
-	).format(
-		cust_name,
-		fmt_money(limit),
-		fmt_money(fig["exposure"]),
-		fmt_money(fig["exposure"] - limit),
-	)
-
-
-def _block_description(customer, reason, fig, limit, doc=None):
-	"""Full, exact breakdown of *why* the delivery was blocked, for the ops Issue.
-
-	Unlike the short user-facing throw (_block_message), this states the precise
-	numbers so ops can act without re-deriving them."""
-	cust_name = frappe.db.get_value("Customer", customer, "customer_name") or customer
-	lines = [
-		_("Delivery blocked for {0} ({1}).").format(cust_name, customer),
-		_("Reason: {0}").format("payment overdue" if reason == "overdue" else "credit limit exhausted"),
-		_("Credit limit: {0}").format(fmt_money(limit)),
-		_("Current exposure: {0} (outstanding invoices {1} + delivered-not-invoiced)").format(
-			fmt_money(fig["exposure"]), fmt_money(fig["total_outstanding"])
-		),
-	]
-	if reason == "overdue":
-		lines.append(_("Overdue by {0} day(s); overdue amount {1}.").format(
-			fig["overdue_days"], fmt_money(fig["overdue_amount"])
-		))
-		lines.append(_("Overdue invoice(s): {0}").format(", ".join(fig["overdue_invoices"]) or "-"))
-	else:
-		lines.append(_("Over the limit by {0}.").format(fmt_money(fig["exposure"] - limit)))
-	# Context on the punch that was refused.
-	dn_qty = sum(flt(getattr(i, "qty", 0)) for i in (doc.get("items") or [])) if doc else 0
-	if doc:
-		lines.append(_("Refused Delivery Note total qty {0} (grand total {1}).").format(
-			dn_qty, fmt_money(flt(doc.get("grand_total")))
-		))
-	return "\n".join(lines)
-
-
-def raise_credit_block_issue(customer, delivery_note, reason, description):
-	"""Background job: create an ERPNext Issue for a blocked Delivery Note.
-
-	`description` is the full breakdown from _block_description (exact reason + figures).
-	Deduplicated -- if an open credit-block Issue already exists for the customer we skip,
-	so repeated save attempts on the same blocked DN don't spawn duplicates."""
-	open_issue = frappe.get_all(
-		"Issue",
-		filters={
-			"customer": customer,
-			"status": ["not in", ["Closed", "Resolved"]],
-			"subject": ["like", "Credit Breach:%"],
-		},
-		limit=1,
-	)
-	if open_issue:
-		return
-
-	if delivery_note:
-		description += _("\n\nTriggered while saving Delivery Note {0}.").format(delivery_note)
-
-	issue = frappe.new_doc("Issue")
-	issue.subject = f"Credit Breach: {customer}"
-	issue.customer = customer
-	issue.issue_type = _ensure_issue_type()  # Issue.issue_type is mandatory on this site
-	issue.description = description
-	issue.flags.ignore_permissions = True
-	issue.insert(ignore_permissions=True)
-	frappe.db.commit()
-
-
-def _ensure_issue_type():
-	"""Return the 'Credit Breach' Issue Type, creating it once if absent (autoname=Prompt)."""
-	if not frappe.db.exists("Issue Type", ISSUE_TYPE):
-		it = frappe.new_doc("Issue Type")
-		it.name = ISSUE_TYPE
-		it.flags.ignore_permissions = True
-		it.insert(ignore_permissions=True)
-	return ISSUE_TYPE
-
-
 # -- figure upkeep (document events) -----------------------------------------
 
 
@@ -359,7 +171,7 @@ def update_on_delivery_note_submit(doc, method=None):
 	if not _credit_limit_enabled():
 		return
 	customer = doc.get("customer")
-	if customer and not is_cash_advance(customer):
+	if customer:
 		recompute(customer)
 
 
@@ -368,7 +180,7 @@ def update_on_delivery_note_cancel(doc, method=None):
 	if not _credit_limit_enabled():
 		return
 	customer = doc.get("customer")
-	if customer and not is_cash_advance(customer):
+	if customer:
 		recompute(customer)
 
 
@@ -407,54 +219,12 @@ def refresh_on_payment_entry_cancel(doc, method=None):
 		recompute(doc.party)
 
 
-# -- Finance Dossier sync (R1) -----------------------------------------------
-
-
-def sync_limit_from_finance_dossier(doc, method=None):
-	"""Finance Dossier on_submit: push its Credit Insurance Limit onto the Customer.
-
-	Runs after the Finance Dossier controller's on_submit has created the Sales Order
-	(and, for Lead-based quotations, the Customer), so the customer can be resolved via
-	the Sales Order raised from the dossier's quotation."""
-	if not _credit_limit_enabled():
-		return
-	customer = _resolve_customer_from_fd(doc)
-	if not customer or is_cash_advance(customer):
-		return
-	credit = get_or_create_credit_limit(customer)
-	if not credit:
-		return
-	credit.credit_limit = flt(doc.get("credit_insurance_limit"))
-	credit.flags.ignore_permissions = True
-	credit.save(ignore_permissions=True)  # validate -> populate_breach_state
-
-
-def _resolve_customer_from_fd(doc):
-	"""Customer behind a Finance Dossier, via the Sales Order raised from its quotation."""
-	quotation = doc.id if doc.get("finance_dossier_from") == "Quotation" else None
-	if not quotation:
-		return None
-	customer = frappe.db.get_value(
-		"Sales Order", {"custom_quotation": quotation, "docstatus": ["<", 2]}, "customer"
-	)
-	if customer:
-		return customer
-	# Fallback: a Quotation raised directly against an existing Customer.
-	qto, party = frappe.db.get_value("Quotation", quotation, ["quotation_to", "party_name"]) or (
-		None,
-		None,
-	)
-	return party if qto == "Customer" else None
-
-
 # -- Customer lifecycle + scheduler ------------------------------------------
 
 
 def create_credit_for_customer(doc, method=None):
-	"""Customer after_insert: create a Credit Limit record for every non-cash-advance customer."""
+	"""Customer after_insert: create a Credit Limit record for the customer."""
 	if not _credit_limit_enabled():
-		return
-	if doc.get("payment_terms") == CASH_ADVANCE_TERMS:
 		return
 	get_or_create_credit_limit(doc.name)
 
