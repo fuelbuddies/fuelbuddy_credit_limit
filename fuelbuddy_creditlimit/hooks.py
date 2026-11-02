@@ -150,6 +150,8 @@ doc_events = {
 	"Sales Invoice": {
 		"on_submit": f"{_CC}.refresh_on_invoice_submit",
 		"on_cancel": f"{_CC}.refresh_on_invoice_cancel",
+		"validate": f"{_CC}.guard_dispute_hold",
+		"before_update_after_submit": f"{_CC}.guard_dispute_hold",
 	},
 	"Payment Entry": {
 		"on_submit": f"{_CC}.refresh_on_payment_entry_submit",
@@ -159,6 +161,8 @@ doc_events = {
 		"after_insert": f"{_CC}.create_credit_for_customer",
 	},
 }
+
+fixtures = [{"dt": "Custom Field", "filters": [["name", "in", ["Sales Invoice-custom_credit_dispute_hold"]]]}]
 
 # Scheduled Tasks
 # ---------------

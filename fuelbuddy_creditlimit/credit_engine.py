@@ -1,8 +1,7 @@
 # Copyright (c) 2026, Fuelbuddy and contributors
 # For license information, please see license.txt
 
-"""Credit figures for one customer: limits from Credit Cover rows, billed from the Payment Ledger,
-unbilled from Delivery Notes outside the Sales Invoice windows, and the stop status. Never writes."""
+"""One customer's credit figures: limits, exposure, overdue, live exceptions and stop status. Never writes."""
 
 import datetime
 
@@ -27,11 +26,15 @@ def credit_settings():
 	)
 
 
+def _has_wallet(customer):
+	return bool(frappe.db.exists("Wallet", {"customer": customer, "payment_type": "Wallet"}))
+
+
 def is_in_scope(customer):
 	"""Credit customers: enabled, and no Wallet or a Wallet plus a day-term invoice."""
 	if frappe.db.get_value("Customer", customer, "disabled"):
 		return False
-	if not frappe.db.exists("Wallet", {"customer": customer, "payment_type": "Wallet"}):
+	if not _has_wallet(customer):
 		return True
 	return bool(
 		frappe.db.sql(
@@ -73,21 +76,64 @@ def _billed(customer, d):
 	)
 
 
+def _overdue(customer, d, s, currency):
+	"""(overdue amount, days) from per-invoice ledger balances; an amended invoice keeps its root's dates."""
+	balances = frappe.db.sql(
+		"""select against_voucher_type, against_voucher_no, sum(amount) balance from `tabPayment Ledger Entry`
+		where party_type = 'Customer' and party = %s and delinked = 0
+			and account_type = 'Receivable' and posting_date <= %s
+		group by against_voucher_type, against_voucher_no""",
+		(customer, d),
+		as_dict=True,
+	)
+	credits = sum(b.balance for b in balances if b.balance < 0)
+	open_si = {
+		b.against_voucher_no: b.balance
+		for b in balances
+		if b.against_voucher_type == "Sales Invoice"
+		and b.balance > 0
+		and b.balance >= s.credit_overdue_min_amount
+	}
+	ages = []  # (days since the base date, balance) per eligible invoice
+	for si in frappe.get_all(
+		"Sales Invoice",
+		filters={
+			"name": ("in", list(open_si)),
+			"is_opening": ("!=", "Yes"),
+			"currency": currency,
+			"custom_credit_dispute_hold": 0,
+		},
+		fields=["name", "posting_date", "due_date", "amended_from"],
+	):
+		root = si
+		while root.amended_from:
+			root = frappe.db.get_value(
+				"Sales Invoice", root.amended_from, ["posting_date", "due_date", "amended_from"], as_dict=True
+			)
+		base = max(getdate(root.due_date or root.posting_date), getdate(root.posting_date))
+		ages.append(((d - base).days, open_si[si.name]))
+	past = sum(balance for age, balance in ages if age > s.credit_overdue_grace_days)
+	return max(0.0, flt(past + credits, 2)), max([0] + [age for age, _ in ages])
+
+
 def unbilled_by_dn(customer, as_of, since):
-	"""{Delivery Note: value incl. VAT, company currency} for DNs outside every invoice window, one per delivery."""
+	"""{Delivery Note: value incl. VAT, company currency} for DNs no invoice billed, one per delivery."""
 	# imported here so a wallet build without the helper fails only this job, never a DN/SI/PE/JE hook
 	from fuelbuddy_wallet.fuelbuddy_wallet.doctype.wallet.wallet import _billable_rows
 
 	d = getdate(as_of)
+	# billed iff a covering invoice was submitted (first ledger row) after the DN; per-date so MariaDB caches it
 	rows = frappe.db.sql(
 		"""select dn.name, dn.custom_invoiced_item_id iid, dn.docstatus, dn.creation, dn.base_grand_total, dn.net_total,
 			dni.so_detail, dni.against_sales_order, dn.posting_date, dni.item_code, dni.qty, dni.amount
 		from `tabDelivery Note` dn join `tabDelivery Note Item` dni on dni.parent = dn.name
 		where dn.customer = %(c)s and dn.docstatus < 2 and dn.is_return = 0
 			and dn.posting_date between %(since)s and %(d)s
-			and not exists (select 1 from `tabSales Invoice` si where si.customer = dn.customer and si.docstatus = 1
-				and si.is_return = 0 and si.posting_date <= %(d)s
-				and dn.posting_date between si.custom_dn_from_date and si.custom_dn_to_date)""",
+			and dn.creation >= coalesce((select max((select min(p.creation) from `tabPayment Ledger Entry` p
+					where p.voucher_type = 'Sales Invoice' and p.voucher_no = si.name))
+				from `tabSales Invoice` si where si.customer = dn.customer and si.docstatus = 1 and si.is_return = 0
+					and si.posting_date <= %(d)s
+					and dn.posting_date between si.custom_dn_from_date and si.custom_dn_to_date), '2000-01-01')""",
 		{"c": customer, "since": since, "d": d},
 		as_dict=True,
 	)
@@ -112,7 +158,7 @@ def unbilled_by_dn(customer, as_of, since):
 
 
 def compute_credit(customer, as_of=None, settings=None):
-	"""Limits, exposure and stop status of one customer as of a moment."""
+	"""Limits, exposure, overdue and stop status of one customer as of a moment, live exceptions applied."""
 	as_of = as_of or now_datetime()
 	d = getdate(as_of)
 	s = settings or credit_settings()
@@ -127,18 +173,36 @@ def compute_credit(customer, as_of=None, settings=None):
 	billed = _billed(customer, d)
 	unbilled = sum(unbilled_by_dn(customer, as_of, s.credit_unbilled_from).values())
 	exposure = billed + unbilled
+	overdue, days = _overdue(customer, d, s, currency)
+
+	live = frappe.get_all(
+		"Credit Exception",
+		filters={
+			"customer": customer,
+			"docstatus": 1,
+			"valid_from": ("<=", as_of),
+			"expires_at": (">", as_of),
+		},
+		fields=["cap", "lift_overdue", "lift_no_limit", "expires_at"],
+	)
+	cap = sum(flt(x.cap) for x in live)
+	lifts = [
+		r for r, f in (("no_limit", "lift_no_limit"), ("overdue", "lift_overdue")) if any(x[f] for x in live)
+	]
 
 	in_scope = is_in_scope(customer)
 	reasons = []
-	if limit <= 0:
+	if limit <= 0 and "no_limit" not in lifts:
 		reasons.append("no_limit")
-	elif exposure >= limit:
+	elif exposure >= limit + cap:
 		reasons.append("over_limit")
+	if overdue >= s.credit_overdue_min_amount and "overdue" not in lifts and not _has_wallet(customer):
+		reasons.append("overdue")
 	if not in_scope:
 		reasons, status = [], "Clear"
 	elif reasons:
 		status = "Stopped"
-	elif exposure >= limit * flt(s.credit_warning_percent) / 100:
+	elif exposure >= (limit + cap) * flt(s.credit_warning_percent) / 100:
 		status = "Warning"
 	else:
 		status = "Clear"
@@ -151,12 +215,12 @@ def compute_credit(customer, as_of=None, settings=None):
 		billed_amount=billed,
 		unbilled_amount=unbilled,
 		exposure=exposure,
-		amount_remaining=limit - exposure,
+		amount_remaining=limit + cap - exposure,
 		credit_status=status,
 		stop_reasons=",".join(reasons),
-		overdue_amount=0.0,
-		days=0,
-		exception_cap=0.0,
-		exception_lifts="",
-		exception_valid_until=None,
+		overdue_amount=overdue,
+		days=days,
+		exception_cap=cap,
+		exception_lifts=",".join(lifts),
+		exception_valid_until=min((x.expires_at for x in live), default=None),
 	)
