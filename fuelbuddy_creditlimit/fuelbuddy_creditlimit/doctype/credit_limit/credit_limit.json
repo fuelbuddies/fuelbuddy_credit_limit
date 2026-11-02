@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_import": 1,
  "allow_rename": 0,
  "autoname": "field:customer",
  "creation": "2026-06-24 10:54:59.114342",
@@ -10,17 +11,32 @@
   "customer",
   "customer_name",
   "payment_terms",
+  "credit_entity",
   "column_break_head",
-  "credit_limit",
-  "amount_delivered",
   "amount_remaining",
-  "breach_section",
-  "enable_breach",
-  "breach_amount",
   "days",
-  "column_break_breach",
-  "date_of_breach",
-  "last_refreshed"
+  "last_refreshed",
+  "cover_section",
+  "covers",
+  "figures_section",
+  "in_scope",
+  "credit_status",
+  "stop_reasons",
+  "stopped_since",
+  "column_break_limits",
+  "insured_limit",
+  "committee_limit",
+  "operating_limit",
+  "column_break_exposure",
+  "billed_amount",
+  "unbilled_amount",
+  "exposure",
+  "overdue_amount",
+  "exception_section",
+  "exception_cap",
+  "exception_lifts",
+  "column_break_exception",
+  "exception_valid_until"
  ],
  "fields": [
   {
@@ -49,51 +65,23 @@
    "read_only": 1
   },
   {
+   "description": "Credit entity this record's exposure belongs to (recorded only; group cover comes later).",
+   "fieldname": "credit_entity",
+   "fieldtype": "Link",
+   "label": "Credit Entity",
+   "options": "Customer",
+   "permlevel": 1
+  },
+  {
    "fieldname": "column_break_head",
    "fieldtype": "Column Break"
-  },
-  {
-   "description": "Credit insurance limit. Synced from the Finance Dossier on submit; may be adjusted here.",
-   "fieldname": "credit_limit",
-   "fieldtype": "Currency",
-   "in_list_view": 1,
-   "label": "Credit Limit"
-  },
-  {
-   "default": "0.0",
-   "description": "Current exposure: outstanding invoices + delivered-but-not-yet-invoiced. Consumes the credit limit.",
-   "fieldname": "amount_delivered",
-   "fieldtype": "Currency",
-   "label": "Amount Delivered",
-   "read_only": 1
   },
   {
    "default": "0.0",
    "fieldname": "amount_remaining",
    "fieldtype": "Currency",
    "label": "Amount Remaining",
-   "read_only": 1
-  },
-  {
-   "fieldname": "breach_section",
-   "fieldtype": "Section Break",
-   "label": "Credit Breach"
-  },
-  {
-   "default": "0",
-   "description": "On when the customer is overdue or over the credit limit. Blocks Delivery Notes until cleared.",
-   "fieldname": "enable_breach",
-   "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Credit Breach",
-   "read_only": 1
-  },
-  {
-   "default": "0.0",
-   "description": "Overdue outstanding amount when overdue; otherwise the amount over the credit limit.",
-   "fieldname": "breach_amount",
-   "fieldtype": "Currency",
-   "label": "Breach Amount",
+   "permlevel": 2,
    "read_only": 1
   },
   {
@@ -102,29 +90,162 @@
    "fieldname": "days",
    "fieldtype": "Int",
    "label": "Days Overdue",
-   "read_only": 1
-  },
-  {
-   "fieldname": "column_break_breach",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "date_of_breach",
-   "fieldtype": "Datetime",
-   "label": "Date of Breach",
+   "permlevel": 2,
    "read_only": 1
   },
   {
    "fieldname": "last_refreshed",
    "fieldtype": "Datetime",
    "label": "Last Refreshed",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "cover_section",
+   "fieldtype": "Section Break",
+   "label": "Cover"
+  },
+  {
+   "fieldname": "covers",
+   "fieldtype": "Table",
+   "label": "Covers",
+   "options": "Credit Cover",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "figures_section",
+   "fieldtype": "Section Break",
+   "label": "Figures"
+  },
+  {
+   "default": "0",
+   "fieldname": "in_scope",
+   "fieldtype": "Check",
+   "label": "In Scope",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "credit_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Credit Status",
+   "options": "\nClear\nWarning\nStopped",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "stop_reasons",
+   "fieldtype": "Small Text",
+   "label": "Stop Reasons",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "stopped_since",
+   "fieldtype": "Datetime",
+   "label": "Stopped Since",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_limits",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "insured_limit",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Insured Limit",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "committee_limit",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Committee Limit",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "operating_limit",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Operating Limit",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_exposure",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "billed_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Billed Amount",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "unbilled_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Unbilled Amount",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "exposure",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Exposure",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "overdue_amount",
+   "fieldtype": "Currency",
+   "label": "Overdue Amount",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "exception_section",
+   "fieldtype": "Section Break",
+   "label": "Live Exception"
+  },
+  {
+   "fieldname": "exception_cap",
+   "fieldtype": "Currency",
+   "label": "Exception Cap",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "exception_lifts",
+   "fieldtype": "Small Text",
+   "label": "Exception Lifts",
+   "permlevel": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_exception",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "exception_valid_until",
+   "fieldtype": "Datetime",
+   "label": "Exception Valid Until",
+   "permlevel": 2,
    "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-06-25 12:00:00.000000",
+ "modified": "2026-10-30 16:30:00.000000",
  "modified_by": "Administrator",
  "module": "Fuelbuddy Creditlimit",
  "name": "Credit Limit",
@@ -132,7 +253,6 @@
  "permissions": [
   {
    "create": 1,
-   "delete": 1,
    "email": 1,
    "export": 1,
    "print": 1,
@@ -143,19 +263,104 @@
    "write": 1
   },
   {
-   "email": 1,
+   "permlevel": 1,
+   "read": 1,
+   "role": "System Manager"
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "System Manager"
+  },
+  {
+   "create": 1,
+   "export": 1,
+   "import": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Credit Controller",
+   "write": 1
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Credit Controller",
+   "write": 1
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "Credit Controller"
+  },
+  {
    "export": 1,
    "print": 1,
    "read": 1,
    "report": 1,
-   "role": "Accounts Manager",
-   "share": 1,
-   "write": 1
+   "role": "Accounts Manager"
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Accounts Manager"
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "Accounts Manager"
+  },
+  {
+   "read": 1,
+   "role": "Credit Integration"
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Credit Integration"
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "Credit Integration"
+  },
+  {
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Business Head"
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Business Head"
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "Business Head"
+  },
+  {
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Country Head"
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "Country Head"
+  },
+  {
+   "permlevel": 2,
+   "read": 1,
+   "role": "Country Head"
   }
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 1
 }

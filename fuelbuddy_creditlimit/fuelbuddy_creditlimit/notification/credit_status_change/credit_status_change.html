@@ -1,0 +1,14 @@
+{%- set labels = {"no_limit": "no approved limit", "over_limit": "over the limit", "overdue": "overdue invoices"} -%}
+<p><b>{{ doc.customer_name }}</b> ({{ doc.customer }}) is now <b>{{ doc.credit_status }}</b>.</p>
+<ul>
+	{% if doc.stop_reasons %}
+	<li>Reasons: {% for r in doc.stop_reasons.split(",") %}{{ labels.get(r, r) }}{% if not loop.last %}, {% endif %}{% endfor %}</li>
+	{% endif %}
+	<li>Exposure: {{ money(doc.exposure) }}</li>
+	<li>Operating limit: {{ money(doc.operating_limit) }}</li>
+	<li>Headroom: {{ money(doc.amount_remaining) }}</li>
+	{% if doc.exception_cap %}
+	<li>Exception cap: {{ money(doc.exception_cap) }}{% if doc.exception_valid_until %} until {{ frappe.utils.format_datetime(doc.exception_valid_until) }}{% endif %}</li>
+	{% endif %}
+	<li>Figures as of {{ frappe.utils.format_datetime(doc.last_refreshed) }}</li>
+</ul>
