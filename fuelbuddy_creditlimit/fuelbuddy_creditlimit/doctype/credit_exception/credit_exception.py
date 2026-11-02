@@ -12,6 +12,8 @@ from frappe.model.workflow import (
 )
 from frappe.utils import add_days, add_to_date, cint, flt, get_datetime
 
+from fuelbuddy_creditlimit.credit_engine import credit_settings
+
 JOINT_APPROVAL_DAYS = 15
 HEAD_STATES = ("Pending Business Head", "Pending Country Head")
 LOCKED_FIELDS = ("customer", "cap", "valid_from", "expires_at", "lift_overdue", "lift_no_limit")
@@ -24,8 +26,7 @@ class CreditException(Document):
 		valid_from, expires_at = get_datetime(self.valid_from), get_datetime(self.expires_at)
 		if expires_at <= valid_from:
 			frappe.throw(_("Expires At must be after Valid From"))
-		# TODO(Task 5): read through credit_engine.credit_settings()
-		max_days = cint(frappe.db.get_single_value("Fuelbuddy Settings", "credit_exception_max_days")) or 7
+		max_days = credit_settings().credit_exception_max_days
 		if expires_at > add_days(valid_from, max_days):
 			frappe.throw(_("An exception can last at most {0} days").format(max_days))
 
