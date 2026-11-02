@@ -13,15 +13,8 @@
   "payment_terms",
   "credit_entity",
   "column_break_head",
-  "credit_limit",
-  "amount_delivered",
   "amount_remaining",
-  "breach_section",
-  "enable_breach",
-  "breach_amount",
   "days",
-  "column_break_breach",
-  "date_of_breach",
   "last_refreshed",
   "cover_section",
   "covers",
@@ -84,48 +77,11 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Credit insurance limit. Synced from the Finance Dossier on submit; may be adjusted here.",
-   "fieldname": "credit_limit",
-   "fieldtype": "Currency",
-   "in_list_view": 1,
-   "label": "Credit Limit"
-  },
-  {
-   "default": "0.0",
-   "description": "Current exposure: outstanding invoices + delivered-but-not-yet-invoiced. Consumes the credit limit.",
-   "fieldname": "amount_delivered",
-   "fieldtype": "Currency",
-   "label": "Amount Delivered",
-   "read_only": 1
-  },
-  {
    "default": "0.0",
    "fieldname": "amount_remaining",
    "fieldtype": "Currency",
    "label": "Amount Remaining",
    "permlevel": 2,
-   "read_only": 1
-  },
-  {
-   "fieldname": "breach_section",
-   "fieldtype": "Section Break",
-   "label": "Credit Breach"
-  },
-  {
-   "default": "0",
-   "description": "On when the customer is overdue or over the credit limit. Blocks Delivery Notes until cleared.",
-   "fieldname": "enable_breach",
-   "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Credit Breach",
-   "read_only": 1
-  },
-  {
-   "default": "0.0",
-   "description": "Overdue outstanding amount when overdue; otherwise the amount over the credit limit.",
-   "fieldname": "breach_amount",
-   "fieldtype": "Currency",
-   "label": "Breach Amount",
    "read_only": 1
   },
   {
@@ -135,16 +91,6 @@
    "fieldtype": "Int",
    "label": "Days Overdue",
    "permlevel": 2,
-   "read_only": 1
-  },
-  {
-   "fieldname": "column_break_breach",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "date_of_breach",
-   "fieldtype": "Datetime",
-   "label": "Date of Breach",
    "read_only": 1
   },
   {
@@ -299,7 +245,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-10-30 13:00:00.000000",
+ "modified": "2026-10-30 16:30:00.000000",
  "modified_by": "Administrator",
  "module": "Fuelbuddy Creditlimit",
  "name": "Credit Limit",

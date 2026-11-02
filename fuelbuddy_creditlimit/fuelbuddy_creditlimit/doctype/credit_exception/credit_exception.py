@@ -12,6 +12,7 @@ from frappe.model.workflow import (
 )
 from frappe.utils import add_days, add_to_date, cint, flt, get_datetime
 
+from fuelbuddy_creditlimit.credit_control import mark_dirty
 from fuelbuddy_creditlimit.credit_engine import credit_settings
 
 JOINT_APPROVAL_DAYS = 15
@@ -79,6 +80,12 @@ class CreditException(Document):
 	def before_submit(self):
 		self.approved_by = frappe.session.user
 
+	def on_submit(self):
+		mark_dirty(self.customer)
+
 	def before_cancel(self):
 		# a direct cancel skips validate, so Frappe never moves the workflow state
 		self.workflow_state = "Cancelled"
+
+	def on_cancel(self):
+		mark_dirty(self.customer)

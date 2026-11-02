@@ -137,28 +137,34 @@ required_apps = ["fuelbuddy_crm", "fuelbuddy_wallet"]
 # ---------------
 # Hook on document methods and events
 
-# Credit control: enforce credit limit / overdue on Delivery Notes and keep each
-# customer's Credit record in step with their transactions. Cash-advance customers
-# are skipped inside the handlers (the Wallet app enforces those instead).
+# Credit control: money events mark the customer dirty; a minute cron recomputes it.
 _CC = "fuelbuddy_creditlimit.credit_control"
 doc_events = {
 	# Per team convention: one submit-side and one cancel-side handler per doctype.
 	"Delivery Note": {
-		"on_submit": f"{_CC}.update_on_delivery_note_submit",
-		"on_cancel": f"{_CC}.update_on_delivery_note_cancel",
+		"on_update": f"{_CC}.mark_on_delivery_note_save",
+		"on_cancel": f"{_CC}.mark_on_delivery_note_cancel",
+		"after_delete": f"{_CC}.mark_on_delivery_note_cancel",
 	},
 	"Sales Invoice": {
-		"on_submit": f"{_CC}.refresh_on_invoice_submit",
-		"on_cancel": f"{_CC}.refresh_on_invoice_cancel",
+		"on_submit": f"{_CC}.mark_on_invoice_submit",
+		"on_update_after_submit": f"{_CC}.mark_on_invoice_submit",
+		"on_cancel": f"{_CC}.mark_on_invoice_cancel",
 		"validate": f"{_CC}.guard_dispute_hold",
 		"before_update_after_submit": f"{_CC}.guard_dispute_hold",
 	},
 	"Payment Entry": {
-		"on_submit": f"{_CC}.refresh_on_payment_entry_submit",
-		"on_cancel": f"{_CC}.refresh_on_payment_entry_cancel",
+		"on_submit": f"{_CC}.mark_on_payment_entry_submit",
+		"on_update_after_submit": f"{_CC}.mark_on_payment_entry_submit",
+		"on_cancel": f"{_CC}.mark_on_payment_entry_cancel",
+	},
+	"Journal Entry": {
+		"on_submit": f"{_CC}.mark_on_journal_entry_submit",
+		"on_update_after_submit": f"{_CC}.mark_on_journal_entry_submit",
+		"on_cancel": f"{_CC}.mark_on_journal_entry_cancel",
 	},
 	"Customer": {
-		"after_insert": f"{_CC}.create_credit_for_customer",
+		"after_insert": f"{_CC}.mark_on_customer_insert",
 	},
 }
 
@@ -166,12 +172,12 @@ fixtures = [{"dt": "Custom Field", "filters": [["name", "in", ["Sales Invoice-cu
 
 # Scheduled Tasks
 # ---------------
-# Recompute every Credit record daily so invoices that cross their due date flip
-# has_overdue -- a due date passing has no document event to hook into.
+# Drain dirty customers every minute; re-mark all every 15 (due dates and exception expiries have no event).
 scheduler_events = {
-	"daily": [
-		"fuelbuddy_creditlimit.credit_control.refresh_overdue_daily",
-	],
+	"cron": {
+		"* * * * *": [f"{_CC}.drain_dirty"],
+		"*/15 * * * *": [f"{_CC}.sweep_credit"],
+	},
 }
 
 # scheduler_events = {

@@ -9,16 +9,15 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt, getdate
 
-from fuelbuddy_creditlimit.credit_control import populate_breach_state
+from fuelbuddy_creditlimit.credit_control import mark_dirty
 
 
 class CreditLimit(Document):
 	def validate(self):
 		validate_covers(self)
-		# Recompute exposure / overdue / breach from the customer's live transactions on
-		# every save -- so a manual change to the credit limit, or a programmatic refresh
-		# triggered by a document event, both land in a consistent state.
-		populate_breach_state(self)
+
+	def on_update(self):
+		mark_dirty(self.customer)
 
 
 def validate_covers(doc):
