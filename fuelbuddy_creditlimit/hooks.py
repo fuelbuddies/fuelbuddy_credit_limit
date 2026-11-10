@@ -83,7 +83,7 @@ required_apps = ["fuelbuddy_crm", "fuelbuddy_wallet"]
 # ------------
 
 # before_install = "fuelbuddy_creditlimit.install.before_install"
-# after_install = "fuelbuddy_creditlimit.install.after_install"
+after_install = "fuelbuddy_creditlimit.install.after_install"
 
 # Uninstallation
 # ------------

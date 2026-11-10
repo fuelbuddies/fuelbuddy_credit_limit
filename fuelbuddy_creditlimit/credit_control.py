@@ -76,7 +76,9 @@ def recompute_credit(customer):
 	if not name:
 		if not is_in_scope(customer):
 			return None
-		name = frappe.get_doc({"doctype": DOCTYPE, "customer": customer}).insert(ignore_permissions=True).name
+		new = frappe.get_doc({"doctype": DOCTYPE, "customer": customer})
+		new.flags.from_recompute = True
+		name = new.insert(ignore_permissions=True).name
 	# reads only, exchange-rate lookups included: done before the row lock so the lock is held for the write alone
 	values = compute_credit(customer, as_of)
 	doc = frappe.get_doc(DOCTYPE, name, for_update=True)

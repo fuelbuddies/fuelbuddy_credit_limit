@@ -17,7 +17,9 @@ class CreditLimit(Document):
 		validate_covers(self)
 
 	def on_update(self):
-		mark_dirty(self.customer)
+		# the engine's own insert is already being computed; any other save (e.g. covers edited) recomputes
+		if not self.flags.from_recompute:
+			mark_dirty(self.customer)
 
 
 def validate_covers(doc):
