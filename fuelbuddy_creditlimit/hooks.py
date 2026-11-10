@@ -178,7 +178,6 @@ fixtures = [
 					"Fuelbuddy Settings-custom_credit_warning_percent",
 					"Fuelbuddy Settings-custom_credit_column_break",
 					"Fuelbuddy Settings-custom_credit_overdue_grace_days",
-					"Fuelbuddy Settings-custom_credit_unbilled_from",
 					"Fuelbuddy Settings-custom_credit_exception_max_days",
 				],
 			]

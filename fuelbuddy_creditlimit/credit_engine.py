@@ -3,26 +3,22 @@
 
 """One customer's credit figures: limits, exposure, overdue, live exceptions and stop status. Never writes."""
 
-import datetime
-
 import frappe
 from erpnext import get_default_company
 from erpnext.setup.utils import get_exchange_rate
 from frappe.utils import cint, flt, getdate, now_datetime
 
 from fuelbuddy_creditlimit.overdue import OpenInvoice, overdue
+from fuelbuddy_creditlimit.unbilled import Delivery, unbilled_qty, unbilled_share
 
 
 def credit_settings():
 	"""The credit fields of Fuelbuddy Settings. Blank or 0 means the default: Singles get no defaults on migrate."""
 	s = frappe.db.get_singles_dict("Fuelbuddy Settings")
-	since = getdate(s.custom_credit_unbilled_from) if s.custom_credit_unbilled_from else None
 	return frappe._dict(
 		credit_insured_factor=flt(s.custom_credit_insured_factor) or 80,
 		credit_warning_percent=flt(s.custom_credit_warning_percent) or 80,
 		credit_overdue_grace_days=cint(s.custom_credit_overdue_grace_days) or 15,
-		# before 2000 = unset (Frappe reads a NULL Date as year 1); else U would count every DN since go-live
-		credit_unbilled_from=since if since and since.year >= 2000 else datetime.date(2026, 6, 1),
 		credit_exception_max_days=cint(s.custom_credit_exception_max_days) or 7,
 	)
 
@@ -111,42 +107,79 @@ def _open_invoices(customer, d):
 	return invoices, credit
 
 
-def unbilled_by_dn(customer, as_of, since):
-	"""{Delivery Note: value incl. VAT, company currency} for DNs no invoice billed, one per delivery."""
+# Every delivery of the customer up to %(d)s, one copy per platform delivery: of two Delivery Notes for one
+# delivery, the submitted one, then the newest.
+_DELIVERIES = """
+	select dn.name, dn.posting_date, dn.creation, dn.base_grand_total, dn.net_total, dni.idx, dni.item_code,
+		dni.so_detail, dni.against_sales_order, dni.qty, dni.amount, if(dni.stock_qty, dni.stock_qty, dni.qty) sq,
+		dense_rank() over (partition by coalesce(nullif(dn.custom_invoiced_item_id, ''), dn.name)
+			order by dn.docstatus desc, dn.creation desc, dn.name desc) copy
+	from `tabDelivery Note` dn join `tabDelivery Note Item` dni on dni.parent = dn.name
+	where dn.customer = %(c)s and dn.docstatus < 2 and dn.is_return = 0 and dn.posting_date <= %(d)s"""
+
+
+def unbilled_by_dn(customer, as_of):
+	"""{Delivery Note: unbilled value incl. VAT, company currency}. Per item, litres delivered minus litres invoiced
+	over all time, taken from the newest deliveries (unbilled.py), valued as the invoice will value them."""
 	# imported here so a wallet build without the helper fails only this job, never a DN/SI/PE/JE hook
 	from fuelbuddy_wallet.fuelbuddy_wallet.doctype.wallet.wallet import _billable_rows
 
 	d = getdate(as_of)
-	# billed iff a covering invoice was submitted (first ledger row) after the DN; per-date so MariaDB caches it
-	rows = frappe.db.sql(
-		"""select dn.name, dn.custom_invoiced_item_id iid, dn.docstatus, dn.creation, dn.base_grand_total, dn.net_total,
-			dni.so_detail, dni.against_sales_order, dn.posting_date, dni.item_code, dni.qty, dni.amount
-		from `tabDelivery Note` dn join `tabDelivery Note Item` dni on dni.parent = dn.name
-		where dn.customer = %(c)s and dn.docstatus < 2 and dn.is_return = 0
-			and dn.posting_date between %(since)s and %(d)s
-			and dn.creation >= coalesce((select max((select min(p.creation) from `tabPayment Ledger Entry` p
-					where p.voucher_type = 'Sales Invoice' and p.voucher_no = si.name))
-				from `tabSales Invoice` si where si.customer = dn.customer and si.docstatus = 1 and si.is_return = 0
-					and si.posting_date <= %(d)s
-					and dn.posting_date between si.custom_dn_from_date and si.custom_dn_to_date), '2000-01-01')""",
-		{"c": customer, "since": since, "d": d},
-		as_dict=True,
+	args = {"c": customer, "d": d}
+	delivered = dict(
+		frappe.db.sql(
+			f"select item_code, sum(sq) from ({_DELIVERIES}) x where copy = 1 group by item_code",
+			args,
+		)
 	)
-	# two DNs for one platform delivery: keep the submitted one, then the newest
-	best = {}
-	for r in rows:
-		key = r.iid or r.name
-		if key not in best or (r.docstatus, r.creation) > (best[key].docstatus, best[key].creation):
-			best[key] = r
-	kept = {r.name for r in best.values()}
-	rows = [r for r in rows if r.name in kept]
+	# opening invoices bill balances from before go-live and carry no item, so they never match a delivery
+	invoiced = dict(
+		frappe.db.sql(
+			"""select sii.item_code, sum(if(sii.stock_qty, sii.stock_qty, sii.qty))
+			from `tabSales Invoice Item` sii join `tabSales Invoice` si on si.name = sii.parent
+			where si.customer = %(c)s and si.docstatus = 1 and ifnull(si.is_opening, 'No') != 'Yes'
+				and si.posting_date <= %(d)s
+			group by sii.item_code""",
+			args,
+		)
+	)
+	need = unbilled_qty({i: flt(q) for i, q in delivered.items()}, {i: flt(q) for i, q in invoiced.items()})
+	rows = []
+	for item, qty in need.items():
+		# only the newest deliveries that cover the unbilled quantity; unbilled_share() decides, this just trims
+		rows += frappe.db.sql(
+			f"""select * from (
+				select x.*, sum(sq) over (order by posting_date desc, creation desc, name desc, idx desc) run
+				from ({_DELIVERIES}) x where copy = 1 and item_code = %(item)s
+			) y where run - sq < %(qty)s""",
+			{**args, "item": item, "qty": qty},
+			as_dict=True,
+		)
+	share = unbilled_share(
+		[
+			Delivery(i, r.item_code, (r.posting_date, r.creation, r.name, r.idx), flt(r.sq))
+			for i, r in enumerate(rows)
+		],
+		need,
+	)
+	picked = [(r, share[i]) for i, r in enumerate(rows) if i in share]
 	values = _billable_rows(
 		customer,
-		[(r.so_detail, r.against_sales_order, r.posting_date, r.item_code, r.qty, r.amount) for r in rows],
+		[
+			(
+				r.so_detail,
+				r.against_sales_order,
+				r.posting_date,
+				r.item_code,
+				flt(r.qty) * f,
+				flt(r.amount) * f,
+			)
+			for r, f in picked
+		],
 		d,
 	)
 	out = {}
-	for r, (value, _fm) in zip(rows, values, strict=True):
+	for (r, _f), (value, _fm) in zip(picked, values, strict=True):
 		net = flt(r.net_total)
 		out[r.name] = out.get(r.name, 0.0) + value * (flt(r.base_grand_total) / net if net else 1.0)
 	return out
@@ -166,7 +199,7 @@ def compute_credit(customer, as_of=None, settings=None):
 	limit = min(share, committee) if "Insurance" in limits and "Committee" in limits else share or committee
 
 	billed = _billed(customer, d)
-	unbilled = sum(unbilled_by_dn(customer, as_of, s.credit_unbilled_from).values())
+	unbilled = sum(unbilled_by_dn(customer, as_of).values())
 	exposure = billed + unbilled
 	od = overdue(*_open_invoices(customer, d), d, s.credit_overdue_grace_days)
 
