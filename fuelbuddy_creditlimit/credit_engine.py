@@ -10,6 +10,8 @@ from erpnext import get_default_company
 from erpnext.setup.utils import get_exchange_rate
 from frappe.utils import cint, flt, getdate, now_datetime
 
+from fuelbuddy_creditlimit.overdue import OpenInvoice, overdue
+
 
 def credit_settings():
 	"""The credit fields of Fuelbuddy Settings. Blank or 0 means the default: Singles get no defaults on migrate."""
@@ -19,7 +21,6 @@ def credit_settings():
 		credit_insured_factor=flt(s.custom_credit_insured_factor) or 80,
 		credit_warning_percent=flt(s.custom_credit_warning_percent) or 80,
 		credit_overdue_grace_days=cint(s.custom_credit_overdue_grace_days) or 15,
-		credit_overdue_min_amount=flt(s.custom_credit_overdue_min_amount) or 100,
 		# before 2000 = unset (Frappe reads a NULL Date as year 1); else U would count every DN since go-live
 		credit_unbilled_from=since if since and since.year >= 2000 else datetime.date(2026, 6, 1),
 		credit_exception_max_days=cint(s.custom_credit_exception_max_days) or 7,
@@ -76,8 +77,9 @@ def _billed(customer, d):
 	)
 
 
-def _overdue(customer, d, s, currency):
-	"""(overdue amount, days) from per-invoice ledger balances; an amended invoice keeps its root's dates."""
+def _open_invoices(customer, d):
+	"""(open invoices, unmatched credit) from per-voucher ledger balances in company currency, whatever the
+	invoice currency; an amended invoice keeps its root's dates."""
 	balances = frappe.db.sql(
 		"""select against_voucher_type, against_voucher_no, sum(amount) balance from `tabPayment Ledger Entry`
 		where party_type = 'Customer' and party = %s and delinked = 0
@@ -86,22 +88,17 @@ def _overdue(customer, d, s, currency):
 		(customer, d),
 		as_dict=True,
 	)
-	credits = sum(b.balance for b in balances if b.balance < 0)
+	credit = -sum(flt(b.balance) for b in balances if b.balance < 0)
 	open_si = {
-		b.against_voucher_no: b.balance
+		b.against_voucher_no: flt(b.balance)
 		for b in balances
-		if b.against_voucher_type == "Sales Invoice"
-		and b.balance > 0
-		and b.balance >= s.credit_overdue_min_amount
+		if b.against_voucher_type == "Sales Invoice" and b.balance > 0
 	}
-	ages = []  # (days since the base date, balance) per eligible invoice
+	invoices = []
 	for si in frappe.get_all(
 		"Sales Invoice",
-		filters={
-			"name": ("in", list(open_si)),
-			"is_opening": ("!=", "Yes"),
-			"currency": currency,
-		},
+		# opening invoices stay out until finance confirms they count (IDEV-3419)
+		filters={"name": ("in", list(open_si)), "is_opening": ("!=", "Yes")},
 		fields=["name", "posting_date", "due_date", "amended_from"],
 	):
 		root = si
@@ -109,10 +106,9 @@ def _overdue(customer, d, s, currency):
 			root = frappe.db.get_value(
 				"Sales Invoice", root.amended_from, ["posting_date", "due_date", "amended_from"], as_dict=True
 			)
-		base = max(getdate(root.due_date or root.posting_date), getdate(root.posting_date))
-		ages.append(((d - base).days, open_si[si.name]))
-	past = sum(balance for age, balance in ages if age > s.credit_overdue_grace_days)
-	return max(0.0, flt(past + credits, 2)), max([0] + [age for age, _ in ages])
+		due = max(getdate(root.due_date or root.posting_date), getdate(root.posting_date))
+		invoices.append(OpenInvoice(si.name, due, open_si[si.name]))
+	return invoices, credit
 
 
 def unbilled_by_dn(customer, as_of, since):
@@ -172,7 +168,7 @@ def compute_credit(customer, as_of=None, settings=None):
 	billed = _billed(customer, d)
 	unbilled = sum(unbilled_by_dn(customer, as_of, s.credit_unbilled_from).values())
 	exposure = billed + unbilled
-	overdue, days = _overdue(customer, d, s, currency)
+	od = overdue(*_open_invoices(customer, d), d, s.credit_overdue_grace_days)
 
 	live = frappe.get_all(
 		"Credit Exception",
@@ -195,7 +191,7 @@ def compute_credit(customer, as_of=None, settings=None):
 		reasons.append("no_limit")
 	elif exposure >= limit + cap:
 		reasons.append("over_limit")
-	if overdue >= s.credit_overdue_min_amount and "overdue" not in lifts and not _has_wallet(customer):
+	if od.amount > 0 and "overdue" not in lifts and not _has_wallet(customer):
 		reasons.append("overdue")
 	if not in_scope:
 		reasons, status = [], "Clear"
@@ -217,8 +213,8 @@ def compute_credit(customer, as_of=None, settings=None):
 		amount_remaining=limit + cap - exposure,
 		credit_status=status,
 		stop_reasons=",".join(reasons),
-		overdue_amount=overdue,
-		days=days,
+		overdue_amount=od.amount,
+		days=od.days,
 		exception_cap=cap,
 		exception_lifts=",".join(lifts),
 		exception_valid_until=min((x.expires_at for x in live), default=None),
