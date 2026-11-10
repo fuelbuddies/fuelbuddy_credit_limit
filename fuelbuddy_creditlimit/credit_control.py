@@ -157,15 +157,6 @@ def mark_on_invoice_cancel(doc, method=None):
 	mark_dirty(*_customers(doc))
 
 
-def guard_dispute_hold(doc, method=None):
-	"""Sales Invoice validate / before_update_after_submit: only credit control sets or clears the dispute hold."""
-	before = doc.get_doc_before_save()
-	if cint(doc.get("custom_credit_dispute_hold")) != cint(
-		before and before.get("custom_credit_dispute_hold")
-	):
-		frappe.only_for(("Credit Controller", "System Manager"), message=True)
-
-
 def mark_on_payment_entry_submit(doc, method=None):
 	mark_dirty(*_customers(doc))
 

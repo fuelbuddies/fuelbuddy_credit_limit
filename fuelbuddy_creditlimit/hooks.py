@@ -150,8 +150,6 @@ doc_events = {
 		"on_submit": f"{_CC}.mark_on_invoice_submit",
 		"on_update_after_submit": f"{_CC}.mark_on_invoice_submit",
 		"on_cancel": f"{_CC}.mark_on_invoice_cancel",
-		"validate": f"{_CC}.guard_dispute_hold",
-		"before_update_after_submit": f"{_CC}.guard_dispute_hold",
 	},
 	"Payment Entry": {
 		"on_submit": f"{_CC}.mark_on_payment_entry_submit",
@@ -179,7 +177,6 @@ fixtures = [
 				"name",
 				"in",
 				[
-					"Sales Invoice-custom_credit_dispute_hold",
 					"Fuelbuddy Settings-custom_credit_insured_factor",
 					"Fuelbuddy Settings-custom_credit_warning_percent",
 					"Fuelbuddy Settings-custom_credit_column_break",

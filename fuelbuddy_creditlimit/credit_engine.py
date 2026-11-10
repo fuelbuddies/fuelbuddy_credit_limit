@@ -101,7 +101,6 @@ def _overdue(customer, d, s, currency):
 			"name": ("in", list(open_si)),
 			"is_opening": ("!=", "Yes"),
 			"currency": currency,
-			"custom_credit_dispute_hold": 0,
 		},
 		fields=["name", "posting_date", "due_date", "amended_from"],
 	):
