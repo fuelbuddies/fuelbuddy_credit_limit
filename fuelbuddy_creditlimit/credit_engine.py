@@ -60,9 +60,24 @@ def _limits(customer, d, currency):
 		fields=["cover_type", "approved_limit", "currency", "valid_from", "valid_to"],
 	):
 		if getdate(row.valid_from) <= d <= getdate(row.valid_to or d):
-			rate = get_exchange_rate(row.currency or currency, currency, d)  # 1 when the currencies match
-			limits[row.cover_type] = limits.get(row.cover_type, 0.0) + flt(row.approved_limit) * flt(rate)
+			# 1 when the currencies match
+			rate = flt(get_exchange_rate(row.currency or currency, currency, d))
+			if not rate:
+				_log_missing_rate(customer, row, currency, d)
+			limits[row.cover_type] = limits.get(row.cover_type, 0.0) + flt(row.approved_limit) * rate
 	return limits
+
+
+def _log_missing_rate(customer, row, currency, d):
+	"""No exchange rate: the cover counts as 0, failing closed (BRD NFR-3). Logged once a day so the stop is traceable."""
+	key = f"credit:no_rate:{customer}:{row.cover_type}:{row.currency}:{d}"
+	if frappe.cache.get_value(key):
+		return
+	frappe.cache.set_value(key, 1, expires_in_sec=86400)
+	frappe.log_error(
+		title="Credit cover valued at 0: no exchange rate",
+		message=f"{customer}: {row.cover_type} cover in {row.currency} has no {row.currency} to {currency} rate on {d}.",
+	)
 
 
 def _billed(customer, d):

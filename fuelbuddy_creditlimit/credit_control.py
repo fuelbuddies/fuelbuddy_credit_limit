@@ -37,14 +37,13 @@ def mark_dirty(*customers):
 
 def drain_dirty():
 	"""Minute cron: one deduplicated recompute job per dirty customer.
-	A customer whose job is still queued or running stays dirty for the next minute."""
+	A customer whose job is still queued or running, or whose enqueue fails, stays dirty for the next minute."""
 	if not _credit_limit_enabled():
 		return
 	for member in frappe.cache.smembers(DIRTY_KEY):
 		customer = member.decode()
 		if is_job_enqueued(f"credit:{customer}"):
 			continue
-		frappe.cache.srem(DIRTY_KEY, customer)
 		frappe.enqueue(
 			"fuelbuddy_creditlimit.credit_control.recompute_credit",
 			queue="short",
@@ -52,6 +51,7 @@ def drain_dirty():
 			deduplicate=True,
 			customer=customer,
 		)
+		frappe.cache.srem(DIRTY_KEY, customer)
 
 
 def sweep_credit():
@@ -77,8 +77,9 @@ def recompute_credit(customer):
 		if not is_in_scope(customer):
 			return None
 		name = frappe.get_doc({"doctype": DOCTYPE, "customer": customer}).insert(ignore_permissions=True).name
-	doc = frappe.get_doc(DOCTYPE, name, for_update=True)
+	# reads only, exchange-rate lookups included: done before the row lock so the lock is held for the write alone
 	values = compute_credit(customer, as_of)
+	doc = frappe.get_doc(DOCTYPE, name, for_update=True)
 	values.last_refreshed = as_of
 	values.stopped_since = (doc.stopped_since or as_of) if values.credit_status == "Stopped" else None
 	changed = [
