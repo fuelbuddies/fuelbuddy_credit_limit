@@ -164,9 +164,6 @@ doc_events = {
 	"Customer": {
 		"after_insert": f"{_CC}.mark_on_customer_insert",
 	},
-	"Fuelbuddy Settings": {
-		"validate": f"{_CC}.validate_credit_settings",
-	},
 }
 
 fixtures = [
