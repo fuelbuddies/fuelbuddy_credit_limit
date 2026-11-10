@@ -179,7 +179,7 @@
   "columns": 0,
   "default": "15",
   "depends_on": null,
-  "description": "Credit stops when an invoice is overdue by more than this many days. At least 15; 0 means 15.",
+  "description": "Credit stops once an invoice is this many days past its due date. At least 15; 0 means 15.",
   "docstatus": 0,
   "doctype": "Custom Field",
   "dt": "Fuelbuddy Settings",
