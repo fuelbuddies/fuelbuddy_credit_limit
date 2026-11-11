@@ -18,7 +18,8 @@ class Delivery(NamedTuple):
 
 def unbilled_qty(delivered, invoiced):
 	"""{item: delivered minus invoiced stock quantity} for items with some left unbilled. Both maps are per item;
-	invoiced is net of credit notes. Invoicing more than was delivered leaves nothing unbilled, never less."""
+	delivered is net of returns, invoiced net of credit notes. Invoicing more than was delivered leaves nothing
+	unbilled, never less."""
 	out = {}
 	for item, qty in delivered.items():
 		left = qty - invoiced.get(item, 0.0)

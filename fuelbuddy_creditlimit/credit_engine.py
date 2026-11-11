@@ -108,19 +108,28 @@ def _open_invoices(customer, d):
 
 
 # Every delivery of the customer up to %(d)s, one copy per platform delivery: of two Delivery Notes for one
-# delivery, the submitted one, then the newest.
+# delivery, the submitted one, then the newest. gq is the stock quantity delivered on the line, sq what is left
+# of it after the submitted returns against that line up to %(d)s.
 _DELIVERIES = """
 	select dn.name, dn.posting_date, dn.creation, dn.base_grand_total, dn.net_total, dni.idx, dni.item_code,
-		dni.so_detail, dni.against_sales_order, dni.qty, dni.amount, if(dni.stock_qty, dni.stock_qty, dni.qty) sq,
+		dni.so_detail, dni.against_sales_order, dni.qty, dni.amount, if(dni.stock_qty, dni.stock_qty, dni.qty) gq,
+		if(dni.stock_qty, dni.stock_qty, dni.qty) - coalesce(ret.rq, 0) sq,
 		dense_rank() over (partition by coalesce(nullif(dn.custom_invoiced_item_id, ''), dn.name)
 			order by dn.docstatus desc, dn.creation desc, dn.name desc) copy
 	from `tabDelivery Note` dn join `tabDelivery Note Item` dni on dni.parent = dn.name
+	left join (
+		select ri.dn_detail, -sum(if(ri.stock_qty, ri.stock_qty, ri.qty)) rq
+		from `tabDelivery Note` rn join `tabDelivery Note Item` ri on ri.parent = rn.name
+		where rn.customer = %(c)s and rn.docstatus = 1 and rn.is_return = 1 and rn.posting_date <= %(d)s
+		group by ri.dn_detail
+	) ret on ret.dn_detail = dni.name
 	where dn.customer = %(c)s and dn.docstatus < 2 and dn.is_return = 0 and dn.posting_date <= %(d)s"""
 
 
 def unbilled_by_dn(customer, as_of):
-	"""{Delivery Note: unbilled value incl. VAT, company currency}. Per item, litres delivered minus litres invoiced
-	over all time, taken from the newest deliveries (unbilled.py), valued as the invoice will value them."""
+	"""{Delivery Note: unbilled value incl. VAT, company currency}. Per item, litres delivered net of returns minus
+	litres invoiced over all time, taken from the newest deliveries (unbilled.py), valued as the invoice will value
+	them."""
 	# imported here so a wallet build without the helper fails only this job, never a DN/SI/PE/JE hook
 	from fuelbuddy_wallet.fuelbuddy_wallet.doctype.wallet.wallet import _billable_rows
 
@@ -150,7 +159,7 @@ def unbilled_by_dn(customer, as_of):
 		rows += frappe.db.sql(
 			f"""select * from (
 				select x.*, sum(sq) over (order by posting_date desc, creation desc, name desc, idx desc) run
-				from ({_DELIVERIES}) x where copy = 1 and item_code = %(item)s
+				from ({_DELIVERIES}) x where copy = 1 and item_code = %(item)s and sq > 0
 			) y where run - sq < %(qty)s""",
 			{**args, "item": item, "qty": qty},
 			as_dict=True,
@@ -162,7 +171,8 @@ def unbilled_by_dn(customer, as_of):
 		],
 		need,
 	)
-	picked = [(r, share[i]) for i, r in enumerate(rows) if i in share]
+	# share is of what is left after returns; qty and amount are the whole line, so scale to sq / gq of it
+	picked = [(r, share[i] * flt(r.sq) / flt(r.gq)) for i, r in enumerate(rows) if i in share]
 	values = _billable_rows(
 		customer,
 		[
