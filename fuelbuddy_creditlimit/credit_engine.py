@@ -27,22 +27,25 @@ def _has_wallet(customer):
 	return bool(frappe.db.exists("Wallet", {"customer": customer, "payment_type": "Wallet"}))
 
 
+def is_cash(customer):
+	"""Cash customers pay in advance: a Wallet, or customer payment terms with no credit days (Cash advance).
+	Invoice terms play no part: they come from the deal and can lag a customer's move to cash."""
+	if _has_wallet(customer):
+		return True
+	terms = frappe.db.get_value("Customer", customer, "payment_terms")
+	if not terms:
+		return False
+	days = frappe.db.sql(
+		"select max(credit_days) from `tabPayment Terms Template Detail` where parent = %s", terms
+	)[0][0]
+	return days is not None and not cint(days)
+
+
 def is_in_scope(customer):
-	"""Credit customers: enabled, and no Wallet or a Wallet plus a day-term invoice."""
+	"""Credit customers: enabled and not cash."""
 	if frappe.db.get_value("Customer", customer, "disabled"):
 		return False
-	if not _has_wallet(customer):
-		return True
-	return bool(
-		frappe.db.sql(
-			"""select 1 from `tabSales Invoice` si
-			where si.customer = %s and si.docstatus = 1 and si.is_return = 0
-				and exists (select 1 from `tabPayment Terms Template Detail` ptd
-					where ptd.parent = si.payment_terms_template and ptd.credit_days > 0)
-			limit 1""",
-			customer,
-		)
-	)
+	return not is_cash(customer)
 
 
 def _limits(customer, d, currency):
@@ -234,7 +237,7 @@ def compute_credit(customer, as_of=None, settings=None):
 		reasons.append("no_limit")
 	elif exposure >= limit + cap:
 		reasons.append("over_limit")
-	if od.amount > 0 and "overdue" not in lifts and not _has_wallet(customer):
+	if od.amount > 0 and "overdue" not in lifts:
 		reasons.append("overdue")
 	if not in_scope:
 		reasons, status = [], "Clear"
