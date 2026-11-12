@@ -3,25 +3,22 @@
 
 """One customer's credit figures: limits, exposure, overdue, live exceptions and stop status. Never writes."""
 
-import datetime
-
 import frappe
 from erpnext import get_default_company
 from erpnext.setup.utils import get_exchange_rate
 from frappe.utils import cint, flt, getdate, now_datetime
 
+from fuelbuddy_creditlimit.overdue import OpenInvoice, overdue
+from fuelbuddy_creditlimit.unbilled import Delivery, unbilled_qty, unbilled_share
+
 
 def credit_settings():
 	"""The credit fields of Fuelbuddy Settings. Blank or 0 means the default: Singles get no defaults on migrate."""
 	s = frappe.db.get_singles_dict("Fuelbuddy Settings")
-	since = getdate(s.custom_credit_unbilled_from) if s.custom_credit_unbilled_from else None
 	return frappe._dict(
 		credit_insured_factor=flt(s.custom_credit_insured_factor) or 80,
 		credit_warning_percent=flt(s.custom_credit_warning_percent) or 80,
 		credit_overdue_grace_days=cint(s.custom_credit_overdue_grace_days) or 15,
-		credit_overdue_min_amount=flt(s.custom_credit_overdue_min_amount) or 100,
-		# before 2000 = unset (Frappe reads a NULL Date as year 1); else U would count every DN since go-live
-		credit_unbilled_from=since if since and since.year >= 2000 else datetime.date(2026, 6, 1),
 		credit_exception_max_days=cint(s.custom_credit_exception_max_days) or 7,
 	)
 
@@ -30,22 +27,25 @@ def _has_wallet(customer):
 	return bool(frappe.db.exists("Wallet", {"customer": customer, "payment_type": "Wallet"}))
 
 
+def is_cash(customer):
+	"""Cash customers pay in advance: a Wallet, or customer payment terms with no credit days (Cash advance).
+	Invoice terms play no part: they come from the deal and can lag a customer's move to cash."""
+	if _has_wallet(customer):
+		return True
+	terms = frappe.db.get_value("Customer", customer, "payment_terms")
+	if not terms:
+		return False
+	days = frappe.db.sql(
+		"select max(credit_days) from `tabPayment Terms Template Detail` where parent = %s", terms
+	)[0][0]
+	return days is not None and not cint(days)
+
+
 def is_in_scope(customer):
-	"""Credit customers: enabled, and no Wallet or a Wallet plus a day-term invoice."""
+	"""Credit customers: enabled and not cash."""
 	if frappe.db.get_value("Customer", customer, "disabled"):
 		return False
-	if not _has_wallet(customer):
-		return True
-	return bool(
-		frappe.db.sql(
-			"""select 1 from `tabSales Invoice` si
-			where si.customer = %s and si.docstatus = 1 and si.is_return = 0
-				and exists (select 1 from `tabPayment Terms Template Detail` ptd
-					where ptd.parent = si.payment_terms_template and ptd.credit_days > 0)
-			limit 1""",
-			customer,
-		)
-	)
+	return not is_cash(customer)
 
 
 def _limits(customer, d, currency):
@@ -60,9 +60,24 @@ def _limits(customer, d, currency):
 		fields=["cover_type", "approved_limit", "currency", "valid_from", "valid_to"],
 	):
 		if getdate(row.valid_from) <= d <= getdate(row.valid_to or d):
-			rate = get_exchange_rate(row.currency or currency, currency, d)  # 1 when the currencies match
-			limits[row.cover_type] = limits.get(row.cover_type, 0.0) + flt(row.approved_limit) * flt(rate)
+			# 1 when the currencies match
+			rate = flt(get_exchange_rate(row.currency or currency, currency, d))
+			if not rate:
+				_log_missing_rate(customer, row, currency, d)
+			limits[row.cover_type] = limits.get(row.cover_type, 0.0) + flt(row.approved_limit) * rate
 	return limits
+
+
+def _log_missing_rate(customer, row, currency, d):
+	"""No exchange rate: the cover counts as 0, failing closed (BRD NFR-3). Logged once a day so the stop is traceable."""
+	key = f"credit:no_rate:{customer}:{row.cover_type}:{row.currency}:{d}"
+	if frappe.cache.get_value(key):
+		return
+	frappe.cache.set_value(key, 1, expires_in_sec=86400)
+	frappe.log_error(
+		title="Credit cover valued at 0: no exchange rate",
+		message=f"{customer}: {row.cover_type} cover in {row.currency} has no {row.currency} to {currency} rate on {d}.",
+	)
 
 
 def _billed(customer, d):
@@ -76,8 +91,9 @@ def _billed(customer, d):
 	)
 
 
-def _overdue(customer, d, s, currency):
-	"""(overdue amount, days) from per-invoice ledger balances; an amended invoice keeps its root's dates."""
+def _open_invoices(customer, d):
+	"""(open invoices, unmatched credit) from per-voucher ledger balances in company currency, whatever the
+	invoice currency; an amended invoice keeps its root's dates."""
 	balances = frappe.db.sql(
 		"""select against_voucher_type, against_voucher_no, sum(amount) balance from `tabPayment Ledger Entry`
 		where party_type = 'Customer' and party = %s and delinked = 0
@@ -86,23 +102,17 @@ def _overdue(customer, d, s, currency):
 		(customer, d),
 		as_dict=True,
 	)
-	credits = sum(b.balance for b in balances if b.balance < 0)
+	credit = -sum(flt(b.balance) for b in balances if b.balance < 0)
 	open_si = {
-		b.against_voucher_no: b.balance
+		b.against_voucher_no: flt(b.balance)
 		for b in balances
-		if b.against_voucher_type == "Sales Invoice"
-		and b.balance > 0
-		and b.balance >= s.credit_overdue_min_amount
+		if b.against_voucher_type == "Sales Invoice" and b.balance > 0
 	}
-	ages = []  # (days since the base date, balance) per eligible invoice
+	invoices = []
 	for si in frappe.get_all(
 		"Sales Invoice",
-		filters={
-			"name": ("in", list(open_si)),
-			"is_opening": ("!=", "Yes"),
-			"currency": currency,
-			"custom_credit_dispute_hold": 0,
-		},
+		# opening invoices stay out until finance confirms they count (IDEV-3419)
+		filters={"name": ("in", list(open_si)), "is_opening": ("!=", "Yes")},
 		fields=["name", "posting_date", "due_date", "amended_from"],
 	):
 		root = si
@@ -110,48 +120,94 @@ def _overdue(customer, d, s, currency):
 			root = frappe.db.get_value(
 				"Sales Invoice", root.amended_from, ["posting_date", "due_date", "amended_from"], as_dict=True
 			)
-		base = max(getdate(root.due_date or root.posting_date), getdate(root.posting_date))
-		ages.append(((d - base).days, open_si[si.name]))
-	past = sum(balance for age, balance in ages if age > s.credit_overdue_grace_days)
-	return max(0.0, flt(past + credits, 2)), max([0] + [age for age, _ in ages])
+		due = max(getdate(root.due_date or root.posting_date), getdate(root.posting_date))
+		invoices.append(OpenInvoice(si.name, due, open_si[si.name]))
+	return invoices, credit
 
 
-def unbilled_by_dn(customer, as_of, since):
-	"""{Delivery Note: value incl. VAT, company currency} for DNs no invoice billed, one per delivery."""
+# Every delivery of the customer up to %(d)s, one copy per platform delivery: of two Delivery Notes for one
+# delivery, the submitted one, then the newest. gq is the stock quantity delivered on the line, sq what is left
+# of it after the submitted returns against that line up to %(d)s.
+_DELIVERIES = """
+	select dn.name, dn.posting_date, dn.creation, dn.base_grand_total, dn.net_total, dni.idx, dni.item_code,
+		dni.so_detail, dni.against_sales_order, dni.qty, dni.amount, if(dni.stock_qty, dni.stock_qty, dni.qty) gq,
+		if(dni.stock_qty, dni.stock_qty, dni.qty) - coalesce(ret.rq, 0) sq,
+		dense_rank() over (partition by coalesce(nullif(dn.custom_invoiced_item_id, ''), dn.name)
+			order by dn.docstatus desc, dn.creation desc, dn.name desc) copy
+	from `tabDelivery Note` dn join `tabDelivery Note Item` dni on dni.parent = dn.name
+	left join (
+		select ri.dn_detail, -sum(if(ri.stock_qty, ri.stock_qty, ri.qty)) rq
+		from `tabDelivery Note` rn join `tabDelivery Note Item` ri on ri.parent = rn.name
+		where rn.customer = %(c)s and rn.docstatus = 1 and rn.is_return = 1 and rn.posting_date <= %(d)s
+		group by ri.dn_detail
+	) ret on ret.dn_detail = dni.name
+	where dn.customer = %(c)s and dn.docstatus < 2 and dn.is_return = 0 and dn.posting_date <= %(d)s"""
+
+
+def unbilled_by_dn(customer, as_of):
+	"""{Delivery Note: unbilled value incl. VAT, company currency}. Per item, litres delivered net of returns minus
+	litres invoiced over all time, taken from the newest deliveries (unbilled.py), valued as the invoice will value
+	them."""
 	# imported here so a wallet build without the helper fails only this job, never a DN/SI/PE/JE hook
 	from fuelbuddy_wallet.fuelbuddy_wallet.doctype.wallet.wallet import _billable_rows
 
 	d = getdate(as_of)
-	# billed iff a covering invoice was submitted (first ledger row) after the DN; per-date so MariaDB caches it
-	rows = frappe.db.sql(
-		"""select dn.name, dn.custom_invoiced_item_id iid, dn.docstatus, dn.creation, dn.base_grand_total, dn.net_total,
-			dni.so_detail, dni.against_sales_order, dn.posting_date, dni.item_code, dni.qty, dni.amount
-		from `tabDelivery Note` dn join `tabDelivery Note Item` dni on dni.parent = dn.name
-		where dn.customer = %(c)s and dn.docstatus < 2 and dn.is_return = 0
-			and dn.posting_date between %(since)s and %(d)s
-			and dn.creation >= coalesce((select max((select min(p.creation) from `tabPayment Ledger Entry` p
-					where p.voucher_type = 'Sales Invoice' and p.voucher_no = si.name))
-				from `tabSales Invoice` si where si.customer = dn.customer and si.docstatus = 1 and si.is_return = 0
-					and si.posting_date <= %(d)s
-					and dn.posting_date between si.custom_dn_from_date and si.custom_dn_to_date), '2000-01-01')""",
-		{"c": customer, "since": since, "d": d},
-		as_dict=True,
+	args = {"c": customer, "d": d}
+	delivered = dict(
+		frappe.db.sql(
+			f"select item_code, sum(sq) from ({_DELIVERIES}) x where copy = 1 group by item_code",
+			args,
+		)
 	)
-	# two DNs for one platform delivery: keep the submitted one, then the newest
-	best = {}
-	for r in rows:
-		key = r.iid or r.name
-		if key not in best or (r.docstatus, r.creation) > (best[key].docstatus, best[key].creation):
-			best[key] = r
-	kept = {r.name for r in best.values()}
-	rows = [r for r in rows if r.name in kept]
+	# opening invoices bill balances from before go-live and carry no item, so they never match a delivery
+	invoiced = dict(
+		frappe.db.sql(
+			"""select sii.item_code, sum(if(sii.stock_qty, sii.stock_qty, sii.qty))
+			from `tabSales Invoice Item` sii join `tabSales Invoice` si on si.name = sii.parent
+			where si.customer = %(c)s and si.docstatus = 1 and ifnull(si.is_opening, 'No') != 'Yes'
+				and si.posting_date <= %(d)s
+			group by sii.item_code""",
+			args,
+		)
+	)
+	need = unbilled_qty({i: flt(q) for i, q in delivered.items()}, {i: flt(q) for i, q in invoiced.items()})
+	rows = []
+	for item, qty in need.items():
+		# only the newest deliveries that cover the unbilled quantity; unbilled_share() decides, this just trims
+		rows += frappe.db.sql(
+			f"""select * from (
+				select x.*, sum(sq) over (order by posting_date desc, creation desc, name desc, idx desc) run
+				from ({_DELIVERIES}) x where copy = 1 and item_code = %(item)s and sq > 0
+			) y where run - sq < %(qty)s""",
+			{**args, "item": item, "qty": qty},
+			as_dict=True,
+		)
+	share = unbilled_share(
+		[
+			Delivery(i, r.item_code, (r.posting_date, r.creation, r.name, r.idx), flt(r.sq))
+			for i, r in enumerate(rows)
+		],
+		need,
+	)
+	# share is of what is left after returns; qty and amount are the whole line, so scale to sq / gq of it
+	picked = [(r, share[i] * flt(r.sq) / flt(r.gq)) for i, r in enumerate(rows) if i in share]
 	values = _billable_rows(
 		customer,
-		[(r.so_detail, r.against_sales_order, r.posting_date, r.item_code, r.qty, r.amount) for r in rows],
+		[
+			(
+				r.so_detail,
+				r.against_sales_order,
+				r.posting_date,
+				r.item_code,
+				flt(r.qty) * f,
+				flt(r.amount) * f,
+			)
+			for r, f in picked
+		],
 		d,
 	)
 	out = {}
-	for r, (value, _fm) in zip(rows, values, strict=True):
+	for (r, _f), (value, _fm) in zip(picked, values, strict=True):
 		net = flt(r.net_total)
 		out[r.name] = out.get(r.name, 0.0) + value * (flt(r.base_grand_total) / net if net else 1.0)
 	return out
@@ -171,9 +227,9 @@ def compute_credit(customer, as_of=None, settings=None):
 	limit = min(share, committee) if "Insurance" in limits and "Committee" in limits else share or committee
 
 	billed = _billed(customer, d)
-	unbilled = sum(unbilled_by_dn(customer, as_of, s.credit_unbilled_from).values())
+	unbilled = sum(unbilled_by_dn(customer, as_of).values())
 	exposure = billed + unbilled
-	overdue, days = _overdue(customer, d, s, currency)
+	od = overdue(*_open_invoices(customer, d), d, s.credit_overdue_grace_days)
 
 	live = frappe.get_all(
 		"Credit Exception",
@@ -196,7 +252,7 @@ def compute_credit(customer, as_of=None, settings=None):
 		reasons.append("no_limit")
 	elif exposure >= limit + cap:
 		reasons.append("over_limit")
-	if overdue >= s.credit_overdue_min_amount and "overdue" not in lifts and not _has_wallet(customer):
+	if od.amount > 0 and "overdue" not in lifts:
 		reasons.append("overdue")
 	if not in_scope:
 		reasons, status = [], "Clear"
@@ -218,8 +274,8 @@ def compute_credit(customer, as_of=None, settings=None):
 		amount_remaining=limit + cap - exposure,
 		credit_status=status,
 		stop_reasons=",".join(reasons),
-		overdue_amount=overdue,
-		days=days,
+		overdue_amount=od.amount,
+		days=od.days,
 		exception_cap=cap,
 		exception_lifts=",".join(lifts),
 		exception_valid_until=min((x.expires_at for x in live), default=None),

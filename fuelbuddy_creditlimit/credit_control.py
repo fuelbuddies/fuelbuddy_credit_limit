@@ -37,14 +37,13 @@ def mark_dirty(*customers):
 
 def drain_dirty():
 	"""Minute cron: one deduplicated recompute job per dirty customer.
-	A customer whose job is still queued or running stays dirty for the next minute."""
+	A customer whose job is still queued or running, or whose enqueue fails, stays dirty for the next minute."""
 	if not _credit_limit_enabled():
 		return
 	for member in frappe.cache.smembers(DIRTY_KEY):
 		customer = member.decode()
 		if is_job_enqueued(f"credit:{customer}"):
 			continue
-		frappe.cache.srem(DIRTY_KEY, customer)
 		frappe.enqueue(
 			"fuelbuddy_creditlimit.credit_control.recompute_credit",
 			queue="short",
@@ -52,6 +51,7 @@ def drain_dirty():
 			deduplicate=True,
 			customer=customer,
 		)
+		frappe.cache.srem(DIRTY_KEY, customer)
 
 
 def sweep_credit():
@@ -76,9 +76,12 @@ def recompute_credit(customer):
 	if not name:
 		if not is_in_scope(customer):
 			return None
-		name = frappe.get_doc({"doctype": DOCTYPE, "customer": customer}).insert(ignore_permissions=True).name
-	doc = frappe.get_doc(DOCTYPE, name, for_update=True)
+		new = frappe.get_doc({"doctype": DOCTYPE, "customer": customer})
+		new.flags.from_recompute = True
+		name = new.insert(ignore_permissions=True).name
+	# reads only, exchange-rate lookups included: done before the row lock so the lock is held for the write alone
 	values = compute_credit(customer, as_of)
+	doc = frappe.get_doc(DOCTYPE, name, for_update=True)
 	values.last_refreshed = as_of
 	values.stopped_since = (doc.stopped_since or as_of) if values.credit_status == "Stopped" else None
 	changed = [
@@ -157,15 +160,6 @@ def mark_on_invoice_cancel(doc, method=None):
 	mark_dirty(*_customers(doc))
 
 
-def guard_dispute_hold(doc, method=None):
-	"""Sales Invoice validate / before_update_after_submit: only credit control sets or clears the dispute hold."""
-	before = doc.get_doc_before_save()
-	if cint(doc.get("custom_credit_dispute_hold")) != cint(
-		before and before.get("custom_credit_dispute_hold")
-	):
-		frappe.only_for(("Credit Controller", "System Manager"), message=True)
-
-
 def mark_on_payment_entry_submit(doc, method=None):
 	mark_dirty(*_customers(doc))
 
@@ -184,10 +178,3 @@ def mark_on_journal_entry_cancel(doc, method=None):
 
 def mark_on_customer_insert(doc, method=None):
 	mark_dirty(*_customers(doc))
-
-
-def validate_credit_settings(doc, method=None):
-	"""Fuelbuddy Settings validate: the overdue grace is at least 15 days (0 means the default)."""
-	grace = cint(doc.get("custom_credit_overdue_grace_days"))
-	if grace and grace < 15:
-		frappe.throw(_("Overdue Grace Days must be at least 15."))
