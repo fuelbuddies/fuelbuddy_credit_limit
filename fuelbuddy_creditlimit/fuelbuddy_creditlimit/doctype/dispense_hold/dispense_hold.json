@@ -1,0 +1,269 @@
+{
+ "actions": [],
+ "autoname": "DH-.YYYY.-.#####",
+ "creation": "2026-11-16 12:00:00.000000",
+ "description": "What one fill at the pump holds of the customer's wallet, credit and Sales Orders, from the limit call until the fill's Delivery Note is saved. Written only by the platform API (IDEV-3496).",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "customer",
+  "customer_name",
+  "task_id",
+  "customer_asset_id",
+  "posting_date",
+  "column_break_fill",
+  "status",
+  "mode",
+  "platform_ref",
+  "section_quantity",
+  "litres",
+  "rate",
+  "amount",
+  "rate_source",
+  "column_break_quantity",
+  "would_grant_litres",
+  "limited_by",
+  "section_pools",
+  "in_wallet",
+  "in_credit",
+  "in_sales_order",
+  "column_break_pools",
+  "shipping_address",
+  "billing_address",
+  "section_closure",
+  "consumed_by",
+  "release_reason",
+  "column_break_closure",
+  "closed_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fetch_from": "customer.customer_name",
+   "fieldname": "customer_name",
+   "fieldtype": "Data",
+   "label": "Customer Name",
+   "read_only": 1
+  },
+  {
+   "description": "Platform task the fill belongs to.",
+   "fieldname": "task_id",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Task ID",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "description": "Platform customer asset (vehicle or tank) being filled.",
+   "fieldname": "customer_asset_id",
+   "fieldtype": "Data",
+   "label": "Customer Asset ID",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_fill",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Open",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Open\nConsumed\nReleased\nExpired",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "description": "Grant: ERP decided the litres. Record: the platform decided, and ERP recorded what was given.",
+   "fieldname": "mode",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Mode",
+   "options": "Grant\nRecord",
+   "read_only": 1
+  },
+  {
+   "description": "The platform's dispense_hold_ref row.",
+   "fieldname": "platform_ref",
+   "fieldtype": "Data",
+   "label": "Platform Reference",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_quantity",
+   "fieldtype": "Section Break",
+   "label": "Quantity"
+  },
+  {
+   "fieldname": "litres",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Litres",
+   "read_only": 1
+  },
+  {
+   "description": "Per litre, VAT included, as the invoice will bill it.",
+   "fieldname": "rate",
+   "fieldtype": "Currency",
+   "label": "Rate",
+   "read_only": 1
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rate_source",
+   "fieldtype": "Select",
+   "label": "Rate Source",
+   "options": "Sales Order\nForce Majeure\nPlatform",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_quantity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "What ERP would have allowed when the hold was made.",
+   "fieldname": "would_grant_litres",
+   "fieldtype": "Float",
+   "label": "ERP Would Grant (Litres)",
+   "read_only": 1
+  },
+  {
+   "description": "What set ERP's figure: wanted, wallet, credit, sales_order, or why a pool gave nothing.",
+   "fieldname": "limited_by",
+   "fieldtype": "Data",
+   "label": "Limited By",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_pools",
+   "fieldtype": "Section Break",
+   "label": "Counts Against"
+  },
+  {
+   "default": "0",
+   "fieldname": "in_wallet",
+   "fieldtype": "Check",
+   "label": "Wallet",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "in_credit",
+   "fieldtype": "Check",
+   "label": "Credit",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "in_sales_order",
+   "fieldtype": "Check",
+   "label": "Sales Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_pools",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "shipping_address",
+   "fieldtype": "Link",
+   "label": "Shipping Address",
+   "options": "Address",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billing_address",
+   "fieldtype": "Link",
+   "label": "Billing Address",
+   "options": "Address",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_closure",
+   "fieldtype": "Section Break",
+   "label": "Closure"
+  },
+  {
+   "fieldname": "consumed_by",
+   "fieldtype": "Link",
+   "label": "Consumed By",
+   "options": "Delivery Note",
+   "read_only": 1
+  },
+  {
+   "fieldname": "release_reason",
+   "fieldtype": "Select",
+   "label": "Release Reason",
+   "options": "\nCancelled\nNot Dispensed\nExpired",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_closure",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "closed_at",
+   "fieldtype": "Datetime",
+   "label": "Closed At",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "links": [],
+ "modified": "2026-11-16 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Fuelbuddy Creditlimit",
+ "name": "Dispense Hold",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "Credit Controller"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "customer_name",
+ "track_changes": 1
+}

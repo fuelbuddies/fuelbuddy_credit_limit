@@ -139,9 +139,13 @@ after_install = "fuelbuddy_creditlimit.install.after_install"
 
 # Credit control: money events mark the customer dirty; a minute cron recomputes it.
 _CC = "fuelbuddy_creditlimit.credit_control"
+# Dispense holds (IDEV-3496): a pump fill's Delivery Note takes over its hold on the first punch.
+_DH = "fuelbuddy_creditlimit.dispense_hold"
 doc_events = {
 	# Per team convention: one submit-side and one cancel-side handler per doctype.
 	"Delivery Note": {
+		"before_save": f"{_DH}.take_over_hold",
+		"before_submit": f"{_DH}.take_over_hold",
 		"on_update": f"{_CC}.mark_on_delivery_note_save",
 		"on_cancel": f"{_CC}.mark_on_delivery_note_cancel",
 		"after_delete": f"{_CC}.mark_on_delivery_note_cancel",
@@ -179,6 +183,10 @@ fixtures = [
 					"Fuelbuddy Settings-custom_credit_column_break",
 					"Fuelbuddy Settings-custom_credit_overdue_grace_days",
 					"Fuelbuddy Settings-custom_credit_exception_max_days",
+					"Fuelbuddy Settings-custom_dispense_hold_issue_assignee",
+					"Delivery Note-custom_task_id",
+					"Delivery Note-custom_customer_asset_id",
+					"Delivery Note-custom_dispense_hold",
 				],
 			]
 		],
@@ -197,6 +205,9 @@ fixtures = [
 		],
 	},
 ]
+
+# fuelbuddy_wallet subtracts what fills at the pump hold from a desk Delivery Note's room (IDEV-3496).
+wallet_open_holds = [f"{_DH}.open_wallet_hold_amount"]
 
 # Scheduled Tasks
 # ---------------
