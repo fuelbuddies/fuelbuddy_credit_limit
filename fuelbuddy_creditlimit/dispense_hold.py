@@ -236,7 +236,7 @@ def _availability(customer, shipping_address, d, wanted, fallback_rate):
 		billing_address=billing,
 		rate=rate,
 		rate_source=rate_source,
-		litres=litres if wanted is not None else None,
+		litres=None if math.isinf(litres) else litres,  # none: nothing wanted and no pool applies
 		limited_by=limited_by,
 		pools=pools,
 	)
