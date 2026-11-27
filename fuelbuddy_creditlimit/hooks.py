@@ -83,7 +83,7 @@ required_apps = ["fuelbuddy_crm", "fuelbuddy_wallet"]
 # ------------
 
 # before_install = "fuelbuddy_creditlimit.install.before_install"
-# after_install = "fuelbuddy_creditlimit.install.after_install"
+after_install = "fuelbuddy_creditlimit.install.after_install"
 
 # Uninstallation
 # ------------
@@ -150,8 +150,6 @@ doc_events = {
 		"on_submit": f"{_CC}.mark_on_invoice_submit",
 		"on_update_after_submit": f"{_CC}.mark_on_invoice_submit",
 		"on_cancel": f"{_CC}.mark_on_invoice_cancel",
-		"validate": f"{_CC}.guard_dispute_hold",
-		"before_update_after_submit": f"{_CC}.guard_dispute_hold",
 	},
 	"Payment Entry": {
 		"on_submit": f"{_CC}.mark_on_payment_entry_submit",
@@ -166,9 +164,6 @@ doc_events = {
 	"Customer": {
 		"after_insert": f"{_CC}.mark_on_customer_insert",
 	},
-	"Fuelbuddy Settings": {
-		"validate": f"{_CC}.validate_credit_settings",
-	},
 }
 
 fixtures = [
@@ -179,13 +174,10 @@ fixtures = [
 				"name",
 				"in",
 				[
-					"Sales Invoice-custom_credit_dispute_hold",
 					"Fuelbuddy Settings-custom_credit_insured_factor",
 					"Fuelbuddy Settings-custom_credit_warning_percent",
 					"Fuelbuddy Settings-custom_credit_column_break",
 					"Fuelbuddy Settings-custom_credit_overdue_grace_days",
-					"Fuelbuddy Settings-custom_credit_overdue_min_amount",
-					"Fuelbuddy Settings-custom_credit_unbilled_from",
 					"Fuelbuddy Settings-custom_credit_exception_max_days",
 				],
 			]
